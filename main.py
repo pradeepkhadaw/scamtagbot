@@ -516,19 +516,20 @@ async def run_user():
 
 
 if __name__ == "__main__":
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    print("🚀 STD Entrypoint Triggered:", sys.argv)
+
     if len(sys.argv) < 2:
         print("Usage: python main.py [std|user]")
         sys.exit(1)
 
     role = sys.argv[1].strip().lower()
-    if role not in {"std", "user"}:
-        print("Role must be 'std' or 'user'")
-        sys.exit(1)
+    print(f"Role detected: {role}")
 
-    try:
-        if role == "std":
-            asyncio.run(run_std())
-        else:
-            asyncio.run(run_user())
-    except KeyboardInterrupt:
-        pass
+    if role == "std":
+        print("Launching STD Bot...")
+        asyncio.run(run_std())
+    elif role == "user":
+        print("Launching USER Client...")
+        asyncio.run(run_user())
