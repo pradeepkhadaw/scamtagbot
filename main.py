@@ -14,20 +14,14 @@ from pyrogram.enums import ChatType
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait
 
-# Enable simple conversational prompts
-# (adds .ask to Chat and .listen to Client)
-from pyromod import listen  # noqa: F401  (import side-effects)
+from pyromod import listen
 
-# -----------------------------
-# Environment & Globals
-# -----------------------------
-API_ID = int(os.environ["API_ID"])               # required
-API_HASH = os.environ["API_HASH"]                # required
-BOT_TOKEN = os.environ["BOT_TOKEN"]              # required
-MONGO_URI = os.environ["MONGO_URI"]              # required
-OWNER_ID = int(os.environ["OWNER_ID"])          # required
+API_ID = int(os.environ["API_ID"])
+API_HASH = os.environ["API_HASH"]
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+MONGO_URI = os.environ["MONGO_URI"]
+OWNER_ID = int(os.environ["OWNER_ID"])
 
-# Heroku-friendly logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -35,9 +29,6 @@ logging.basicConfig(
 )
 log = logging.getLogger("shieldbot")
 
-# -----------------------------
-# Mongo Setup & Helpers
-# -----------------------------
 client = MongoClient(MONGO_URI)
 db = client["ultimate_hybrid_shieldbot"]
 JOBS: Collection = db["jobs"]
@@ -48,11 +39,11 @@ STATUS_PENDING_REPLY = "PENDING_REPLY"
 STATUS_READY_TO_SEND = "READY_TO_SEND"
 STATUS_COMPLETED = "COMPLETED"
 STATUS_ERROR = "ERROR"
+STATUS_SENDING = "SENDING"
 
 TYPE_DM_FLOW = "DM_FLOW"
 TYPE_MANUAL_SEND = "MANUAL_SEND"
 
-# Indexes
 JOBS.create_index("status")
 JOBS.create_index("created_at")
 JOBS.create_index("updated_at")
@@ -61,13 +52,8 @@ JOBS.create_index("group_message_id")
 JOBS.create_index("dm_message_id")
 CONFIG.create_index("key", unique=True)
 
-
 def now():
     return datetime.now(timezone.utc)
-
-# -----------------------------
-# Config Helpers
-# -----------------------------
 
 def set_config(key: str, value: Any):
     CONFIG.find_one_and_update(
@@ -77,14 +63,9 @@ def set_config(key: str, value: Any):
         return_document=ReturnDocument.AFTER,
     )
 
-
 def get_config(key: str, default=None):
     doc = CONFIG.find_one({"key": key})
     return doc["value"] if doc and "value" in doc else default
-
-# -----------------------------
-# Content helpers
-# -----------------------------
 
 def extract_content(msg: Message) -> Dict[str, Any]:
     payload: Dict[str, Any] = {}
@@ -128,7 +109,6 @@ def extract_content(msg: Message) -> Dict[str, Any]:
     payload["kind"] = kind
     return payload
 
-
 def build_reply_markup(button_rows: Optional[List[List[Dict[str, Any]]]]) -> Optional[InlineKeyboardMarkup]:
     if not button_rows:
         return None
@@ -149,10 +129,6 @@ def build_reply_markup(button_rows: Optional[List[List[Dict[str, Any]]]]) -> Opt
         rows.append(btns)
     return InlineKeyboardMarkup(rows)
 
-# -------------------------------------------------
-# Standard Bot (std) – Admin & Group Interface
-# -------------------------------------------------
-
 std_app = Client(
     name="std-bot",
     api_id=API_ID,
@@ -161,7 +137,6 @@ std_app = Client(
     in_memory=True,
 )
 
-
 @std_app.on_message(filters.command("set_group") & filters.user(OWNER_ID))
 async def cmd_set_group(client: Client, message: Message):
     if message.chat.type not in (ChatType.SUPERGROUP, ChatType.GROUP):
@@ -169,8 +144,6 @@ async def cmd_set_group(client: Client, message: Message):
     set_config("INBOX_GROUP_ID", message.chat.id)
     await message.reply_text(f"Inbox Group saved to DB: <code>{message.chat.id}</code>")
     log.info("INBOX_GROUP_ID set to %s", message.chat.id)
-
-
 
 @std_app.on_message(filters.private & filters.user(OWNER_ID) & filters.command("status"))
 async def cmd_status(client: Client, message: Message):
@@ -184,54 +157,46 @@ async def cmd_status(client: Client, message: Message):
         ])
     )
 
-
 @std_app.on_message(filters.private & filters.user(OWNER_ID) & filters.command("generate_session"))
 async def generate_session(client: Client, message: Message):
-    """Interactive session generation; stores SESSION_STRING in MongoDB."""
     chat = message.chat
     try:
         phone_msg = await chat.ask("📲 Send your phone number with country code (e.g., +91xxxxxxxxxx):")
         phone = phone_msg.text.strip()
 
         temp = Client(name="temp-session", api_id=API_ID, api_hash=API_HASH, in_memory=True)
-        await temp.connect()
+        async with temp:
+            sent = await temp.send_code(phone)
+            code_msg = await chat.ask("🔐 Enter the code you received:")
+            code = code_msg.text.strip()
 
-        sent = await temp.send_code(phone)
-        code_msg = await chat.ask("🔐 Enter the code you received:")
-        code = code_msg.text.strip()
+            try:
+                await temp.sign_in(phone, sent.phone_code_hash, code)
+            except Exception as e:
+                if "SESSION_PASSWORD_NEEDED" in str(e):
+                    pwd_msg = await chat.ask("🧩 2FA enabled. Enter your password:")
+                    await temp.check_password(pwd_msg.text.strip())
+                else:
+                    raise
 
-        try:
-            await temp.sign_in(phone, sent.phone_code_hash, code)
-        except Exception as e:
-            if "SESSION_PASSWORD_NEEDED" in str(e):
-                pwd_msg = await chat.ask("🧩 2FA enabled. Enter your password:")
-                await temp.check_password(pwd_msg.text.strip())
-            else:
-                raise
+            session_string = await temp.export_session_string()
+            set_config("SESSION_STRING", session_string)
 
-        session_string = await temp.export_session_string()
-        set_config("SESSION_STRING", session_string)
-
-        # ✅ Fixed line (used \\n for newline)
         await chat.send_message(
-            "✅ Session saved to DB. The user client dyno will start automatically.\nYou can /status to verify."
+            "✅ Session saved to DB. The user client will start automatically.\nYou can /status to verify."
         )
 
     except FloodWait as e:
         await asyncio.sleep(e.value)
-        await chat.send_message("⏳ Retrying...")
+        await chat.send_message("⏳ Retrying after flood wait...")
     except Exception as e:
         await chat.send_message(f"❌ Error: {e}")
-    finally:
-        try:
-            await temp.disconnect()
-        except Exception:
-            pass
+        log.exception("Session generation error: %s", e)
 
-
-@std_app.on_message(filters.chat(lambda _, __, m: get_config("INBOX_GROUP_ID") == (m.chat.id if m.chat else None)) & filters.user(OWNER_ID))
+@std_app.on_message(
+    filters.chat(lambda _, __, m: get_config("INBOX_GROUP_ID") == (m.chat.id if m.chat else None)) & filters.user(OWNER_ID)
+)
 async def owner_group_replies(client: Client, message: Message):
-    """Owner replies inside the Inbox Group → mark job READY_TO_SEND with content_out."""
     if not message.reply_to_message:
         return
     group_message_id = message.reply_to_message.id
@@ -244,8 +209,6 @@ async def owner_group_replies(client: Client, message: Message):
         {"$set": {"content_out": content, "status": STATUS_READY_TO_SEND, "updated_at": now()}},
     )
     await message.reply_text("Queued for protected send by user client ✅")
-
-
 
 @std_app.on_message(filters.private & filters.user(OWNER_ID) & filters.command("send_protected"))
 async def cmd_send_protected(client: Client, message: Message):
@@ -278,19 +241,16 @@ async def cmd_send_protected(client: Client, message: Message):
     res = JOBS.insert_one(doc)
     await message.reply_text(f"Manual protected send queued. Job: <code>{res.inserted_id}</code>")
 
-
 async def std_background():
-    await std_app.start()
-    log.info("STD bot started background loop")
+    log.info("STD bot background loop started")
 
-    # Notify owner if config missing
     try:
         if not get_config("SESSION_STRING"):
             await std_app.send_message(OWNER_ID, "⚙️ No session found. Use /generate_session here to set it up.")
         if not get_config("INBOX_GROUP_ID"):
             await std_app.send_message(OWNER_ID, "⚙️ No inbox group set. Run /set_group in your target group.")
-    except Exception:
-        pass
+    except Exception as e:
+        log.exception("Notification error: %s", e)
 
     while True:
         try:
@@ -311,7 +271,6 @@ async def std_background():
             sender_id = job["sender_id"]
             topic_id = job.get("group_topic_id")
 
-            # Ensure a topic for the sender (title: DM <sender_id>)
             if not topic_id:
                 topic_title = f"DM {sender_id}"
                 try:
@@ -373,6 +332,7 @@ async def std_background():
                         "updated_at": now()
                     }},
                 )
+                log.info("Mirrored DM to group for job %s", job["_id"])
             except Exception as e:
                 log.exception("Mirror to group failed: %s", e)
                 JOBS.find_one_and_update(
@@ -384,20 +344,16 @@ async def std_background():
             log.exception("STD loop error: %s", loop_err)
             await asyncio.sleep(2)
 
-
-# -------------------------------------------------
-# User Client (user) – Protected Sending Only Here
-# -------------------------------------------------
+user_app = None
 
 async def run_user_client_loop():
-    """Boot the user client when a session string exists in DB; poll READY_TO_SEND jobs."""
-    # Wait for session string to appear in DB
     session_string = get_config("SESSION_STRING")
     while not session_string:
         log.info("Waiting for SESSION_STRING in DB… use /generate_session in std bot DM.")
         await asyncio.sleep(3)
         session_string = get_config("SESSION_STRING")
 
+    global user_app
     user_app = Client(
         name="user-client",
         api_id=API_ID,
@@ -424,15 +380,15 @@ async def run_user_client_loop():
             "updated_at": now(),
         }
         JOBS.insert_one(doc)
+        log.info("New DM job created for sender %s", message.from_user.id)
 
     async def user_background():
-        await user_app.start()
-        log.info("USER client started background loop")
+        log.info("USER client background loop started")
         while True:
             try:
                 job = JOBS.find_one_and_update(
                     {"status": STATUS_READY_TO_SEND},
-                    {"$set": {"status": "SENDING", "updated_at": now()}},
+                    {"$set": {"status": STATUS_SENDING, "updated_at": now()}},
                 )
                 if not job:
                     await asyncio.sleep(1.0)
@@ -480,15 +436,14 @@ async def run_user_client_loop():
                 log.exception("USER loop error: %s", loop_err)
                 await asyncio.sleep(2)
 
-    # Run forever
     async with user_app:
+        log.info("USER client started and idling")
         bg = asyncio.create_task(user_background())
-        await asyncio.Event().wait()
-        bg.cancel()
-
-
-# Entrypoints
-
+        try:
+            await asyncio.Event().wait()
+        finally:
+            bg.cancel()
+            await bg
 
 async def run_std():
     async with std_app:
@@ -497,14 +452,10 @@ async def run_std():
         await asyncio.Event().wait()
         bg.cancel()
 
-
 async def run_user():
     await run_user_client_loop()
 
-
 if __name__ == "__main__":
-    import logging
-    logging.basicConfig(level=logging.INFO)
     print("🚀 STD Entrypoint Triggered:", sys.argv)
 
     if len(sys.argv) < 2:
