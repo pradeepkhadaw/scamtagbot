@@ -258,12 +258,13 @@ async def owner_group_replies(client: Client, message: Message):
     await message.reply_text("Queued for protected send by user client ✅")
 
 
+
 @std_app.on_message(filters.private & filters.user(OWNER_ID) & filters.command("send_protected"))
 async def cmd_send_protected(client: Client, message: Message):
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
-        return await message.reply_text("Usage: reply to content with
-/send_protected <TARGET_CHAT_ID>")
+        return await message.reply_text("Usage: reply to content with\n/send_protected <TARGET_CHAT_ID>")
+
     try:
         target_id = int(parts[1].strip())
     except ValueError:
@@ -332,7 +333,14 @@ async def std_background():
                     topic_id = None
                 except Exception as e:
                     log.exception("Create topic failed: %s", e)
-                    JOBS.find_one_and_update({"_id": job["_id"]}, {"$set": {"status": STATUS_ERROR, "error": str(e), "updated_at": now()}})
+                    JOBS.find_one_and_update(
+                        {"_id": job["_id"]},
+                        {"$set": {
+                            "status": STATUS_ERROR,
+                            "error": str(e),
+                            "updated_at": now()
+                        }},
+                    )
                     continue
 
             content_in = job.get("content_in") or {}
@@ -370,16 +378,24 @@ async def std_background():
 
                 JOBS.find_one_and_update(
                     {"_id": job["_id"]},
-                    {"$set": {"group_topic_id": topic_id, "group_message_id": sent.id if sent else None, "status": STATUS_PENDING_REPLY, "updated_at": now()}},
+                    {"$set": {
+                        "group_topic_id": topic_id,
+                        "group_message_id": sent.id if sent else None,
+                        "status": STATUS_PENDING_REPLY,
+                        "updated_at": now()
+                    }},
                 )
-
             except Exception as e:
                 log.exception("Mirror to group failed: %s", e)
-                JOBS.find_one_and_update({"_id": job["_id"]}, {"$set": {"status": STATUS_ERROR, "error": str(e), "updated_at": now()}})
+                JOBS.find_one_and_update(
+                    {"_id": job["_id"]},
+                    {"$set": {"status": STATUS_ERROR, "error": str(e), "updated_at": now()}}
+                )
 
         except Exception as loop_err:
             log.exception("STD loop error: %s", loop_err)
             await asyncio.sleep(2)
+
 
 # -------------------------------------------------
 # User Client (user) – Protected Sending Only Here
@@ -439,7 +455,6 @@ async def run_user_client_loop():
                 text = content.get("text")
                 file_id = content.get("file_id")
                 markup = build_reply_markup(content.get("buttons"))
-
                 target_id = job.get("target_chat_id") or job.get("sender_id")
 
                 try:
@@ -464,9 +479,15 @@ async def run_user_client_loop():
                     else:
                         await user_app.send_message(target_id, text=text or "(unsupported kind treated as text)", protect_content=True, reply_markup=markup)
 
-                    JOBS.find_one_and_update({"_id": job["_id"]}, {"$set": {"status": STATUS_COMPLETED, "updated_at": now()}})
+                    JOBS.find_one_and_update(
+                        {"_id": job["_id"]},
+                        {"$set": {"status": STATUS_COMPLETED, "updated_at": now()}}
+                    )
                 except Exception as e:
-                    JOBS.find_one_and_update({"_id": job["_id"]}, {"$set": {"status": STATUS_ERROR, "error": str(e), "updated_at": now()}})
+                    JOBS.find_one_and_update(
+                        {"_id": job["_id"]},
+                        {"$set": {"status": STATUS_ERROR, "error": str(e), "updated_at": now()}}
+                    )
             except Exception as loop_err:
                 log.exception("USER loop error: %s", loop_err)
                 await asyncio.sleep(2)
@@ -476,6 +497,7 @@ async def run_user_client_loop():
         bg = asyncio.create_task(user_background())
         await asyncio.Event().wait()
         bg.cancel()
+
 
 # -----------------------------
 # Entrypoints
@@ -488,8 +510,10 @@ async def run_std():
         await asyncio.Event().wait()
         bg.cancel()
 
+
 async def run_user():
     await run_user_client_loop()
+
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
