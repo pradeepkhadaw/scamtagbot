@@ -223,10 +223,12 @@ async def generate_session(client: Client, message: Message):
 
         session_string = await temp.export_session_string()
         set_config("SESSION_STRING", session_string)
+
+        # ✅ Fixed line (used \\n for newline)
         await chat.send_message(
-            "✅ Session saved to DB. The user client dyno will start automatically.
-You can /status to verify."
+            "✅ Session saved to DB. The user client dyno will start automatically.\nYou can /status to verify."
         )
+
     except FloodWait as e:
         await asyncio.sleep(e.value)
         await chat.send_message("⏳ Retrying...")
