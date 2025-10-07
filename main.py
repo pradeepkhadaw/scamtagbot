@@ -1,7 +1,6 @@
 import os
 import sys
 import asyncio
-import json
 import logging
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
@@ -137,30 +136,46 @@ std_app = Client(
     in_memory=True,
 )
 
+@std_app.on_message(filters.private & filters.user(OWNER_ID) & filters.command("start"))
+async def start_cmd(client: Client, message: Message):
+    await message.reply_text("Bot is running! Available commands:\n/start - This message\n/status - Check setup\n/generate_session - Create user session\n/send_protected - Manual protected send")
+    log.info("Start command triggered by owner")
+
 @std_app.on_message(filters.command("set_group") & filters.user(OWNER_ID))
 async def cmd_set_group(client: Client, message: Message):
-    if message.chat.type not in (ChatType.SUPERGROUP, ChatType.GROUP):
-        return await message.reply_text("Run /set_group **inside** the Inbox Group (forum-enabled).")
-    set_config("INBOX_GROUP_ID", message.chat.id)
-    await message.reply_text(f"Inbox Group saved to DB: <code>{message.chat.id}</code>")
-    log.info("INBOX_GROUP_ID set to %s", message.chat.id)
+    try:
+        log.info("Set_group command triggered")
+        if message.chat.type not in (ChatType.SUPERGROUP, ChatType.GROUP):
+            return await message.reply_text("Run /set_group **inside** the Inbox Group (forum-enabled).")
+        set_config("INBOX_GROUP_ID", message.chat.id)
+        await message.reply_text(f"Inbox Group saved to DB: <code>{message.chat.id}</code>")
+        log.info("INBOX_GROUP_ID set to %s", message.chat.id)
+    except Exception as e:
+        log.exception("Error in set_group: %s", e)
+        await message.reply_text(f"Error: {e}")
 
 @std_app.on_message(filters.private & filters.user(OWNER_ID) & filters.command("status"))
 async def cmd_status(client: Client, message: Message):
-    gid = get_config("INBOX_GROUP_ID")
-    sess = bool(get_config("SESSION_STRING"))
-    await message.reply_text(
-        "\n".join([
-            "⚙️ Status:",
-            f"• Session in DB: {'✅' if sess else '❌'}",
-            f"• Inbox Group ID: {gid if gid else '❌ not set'}",
-        ])
-    )
+    try:
+        log.info("Status command triggered")
+        gid = get_config("INBOX_GROUP_ID")
+        sess = bool(get_config("SESSION_STRING"))
+        await message.reply_text(
+            "\n".join([
+                "⚙️ Status:",
+                f"• Session in DB: {'✅' if sess else '❌'}",
+                f"• Inbox Group ID: {gid if gid else '❌ not set'}",
+            ])
+        )
+    except Exception as e:
+        log.exception("Error in status: %s", e)
+        await message.reply_text(f"Error: {e}")
 
 @std_app.on_message(filters.private & filters.user(OWNER_ID) & filters.command("generate_session"))
 async def generate_session(client: Client, message: Message):
-    chat = message.chat
     try:
+        log.info("Generate_session command triggered")
+        chat = message.chat
         phone_msg = await chat.ask("📲 Send your phone number with country code (e.g., +91xxxxxxxxxx):")
         phone = phone_msg.text.strip()
 
@@ -185,10 +200,11 @@ async def generate_session(client: Client, message: Message):
         await chat.send_message(
             "✅ Session saved to DB. The user client will start automatically.\nYou can /status to verify."
         )
-
+        log.info("Session generated and saved")
     except FloodWait as e:
         await asyncio.sleep(e.value)
         await chat.send_message("⏳ Retrying after flood wait...")
+        log.warning("FloodWait in session gen: %s", e.value)
     except Exception as e:
         await chat.send_message(f"❌ Error: {e}")
         log.exception("Session generation error: %s", e)
@@ -197,61 +213,64 @@ async def generate_session(client: Client, message: Message):
     filters.chat(lambda _, __, m: get_config("INBOX_GROUP_ID") == (m.chat.id if m.chat else None)) & filters.user(OWNER_ID)
 )
 async def owner_group_replies(client: Client, message: Message):
-    if not message.reply_to_message:
-        return
-    group_message_id = message.reply_to_message.id
-    job = JOBS.find_one({"status": STATUS_PENDING_REPLY, "group_message_id": group_message_id})
-    if not job:
-        return
-    content = extract_content(message)
-    JOBS.find_one_and_update(
-        {"_id": job["_id"]},
-        {"$set": {"content_out": content, "status": STATUS_READY_TO_SEND, "updated_at": now()}},
-    )
-    await message.reply_text("Queued for protected send by user client ✅")
+    try:
+        log.info("Owner group reply detected")
+        if not message.reply_to_message:
+            return
+        group_message_id = message.reply_to_message.id
+        job = JOBS.find_one({"status": STATUS_PENDING_REPLY, "group_message_id": group_message_id})
+        if not job:
+            return
+        content = extract_content(message)
+        JOBS.find_one_and_update(
+            {"_id": job["_id"]},
+            {"$set": {"content_out": content, "status": STATUS_READY_TO_SEND, "updated_at": now()}},
+        )
+        await message.reply_text("Queued for protected send by user client ✅")
+        log.info("Job %s marked ready to send", job["_id"])
+    except Exception as e:
+        log.exception("Error in owner_group_replies: %s", e)
+        await message.reply_text(f"Error: {e}")
 
 @std_app.on_message(filters.private & filters.user(OWNER_ID) & filters.command("send_protected"))
 async def cmd_send_protected(client: Client, message: Message):
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        return await message.reply_text("Usage: reply to content with\n/send_protected <TARGET_CHAT_ID>")
-
     try:
-        target_id = int(parts[1].strip())
-    except ValueError:
-        return await message.reply_text("TARGET_CHAT_ID must be numeric.")
+        log.info("Send_protected command triggered")
+        parts = message.text.split(maxsplit=1)
+        if len(parts) < 2:
+            return await message.reply_text("Usage: reply to content with\n/send_protected <TARGET_CHAT_ID>")
 
-    if not message.reply_to_message:
-        return await message.reply_text("Please REPLY to the content you want to send protected.")
+        try:
+            target_id = int(parts[1].strip())
+        except ValueError:
+            return await message.reply_text("TARGET_CHAT_ID must be numeric.")
 
-    content = extract_content(message.reply_to_message)
-    doc = {
-        "type": TYPE_MANUAL_SEND,
-        "status": STATUS_READY_TO_SEND,
-        "sender_id": OWNER_ID,
-        "target_chat_id": target_id,
-        "dm_message_id": None,
-        "group_topic_id": None,
-        "group_message_id": None,
-        "content_in": None,
-        "content_out": content,
-        "created_at": now(),
-        "updated_at": now(),
-    }
-    res = JOBS.insert_one(doc)
-    await message.reply_text(f"Manual protected send queued. Job: <code>{res.inserted_id}</code>")
+        if not message.reply_to_message:
+            return await message.reply_text("Please REPLY to the content you want to send protected.")
+
+        content = extract_content(message.reply_to_message)
+        doc = {
+            "type": TYPE_MANUAL_SEND,
+            "status": STATUS_READY_TO_SEND,
+            "sender_id": OWNER_ID,
+            "target_chat_id": target_id,
+            "dm_message_id": None,
+            "group_topic_id": None,
+            "group_message_id": None,
+            "content_in": None,
+            "content_out": content,
+            "created_at": now(),
+            "updated_at": now(),
+        }
+        res = JOBS.insert_one(doc)
+        await message.reply_text(f"Manual protected send queued. Job: <code>{res.inserted_id}</code>")
+        log.info("Manual send job created: %s", res.inserted_id)
+    except Exception as e:
+        log.exception("Error in send_protected: %s", e)
+        await message.reply_text(f"Error: {e}")
 
 async def std_background():
     log.info("STD bot background loop started")
-
-    try:
-        if not get_config("SESSION_STRING"):
-            await std_app.send_message(OWNER_ID, "⚙️ No session found. Use /generate_session here to set it up.")
-        if not get_config("INBOX_GROUP_ID"):
-            await std_app.send_message(OWNER_ID, "⚙️ No inbox group set. Run /set_group in your target group.")
-    except Exception as e:
-        log.exception("Notification error: %s", e)
-
     while True:
         try:
             group_id = get_config("INBOX_GROUP_ID")
@@ -427,11 +446,13 @@ async def run_user_client_loop():
                         {"_id": job["_id"]},
                         {"$set": {"status": STATUS_COMPLETED, "updated_at": now()}}
                     )
+                    log.info("Protected send completed for job %s", job["_id"])
                 except Exception as e:
                     JOBS.find_one_and_update(
                         {"_id": job["_id"]},
                         {"$set": {"status": STATUS_ERROR, "error": str(e), "updated_at": now()}}
                     )
+                    log.exception("Send failed for job %s: %s", job["_id"], e)
             except Exception as loop_err:
                 log.exception("USER loop error: %s", loop_err)
                 await asyncio.sleep(2)
