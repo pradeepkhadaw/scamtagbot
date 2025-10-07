@@ -183,13 +183,13 @@ async def cmd_set_group(client: Client, message: Message):
     log.info("INBOX_GROUP_ID set to %s", message.chat.id)
 
 
+
 @std_app.on_message(filters.private & filters.user(OWNER_ID) & filters.command("status"))
 async def cmd_status(client: Client, message: Message):
     gid = get_config("INBOX_GROUP_ID")
     sess = bool(get_config("SESSION_STRING"))
     await message.reply_text(
-        "
-".join([
+        "\n".join([
             "⚙️ Status:",
             f"• Session in DB: {'✅' if sess else '❌'}",
             f"• Inbox Group ID: {gid if gid else '❌ not set'}",
