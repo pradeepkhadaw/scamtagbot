@@ -1,15 +1,3 @@
-# main.py
-# Ultimate Hybrid ShieldBot – Single-File Heroku Deploy (DB-driven setup)
-# -----------------------------------------------------
-# Features
-# - Two workers from one file: `std` (Standard Bot admin/relay) and `user` (Pyrogram User Client)
-# - All core secrets via env (API_ID/API_HASH/BOT_TOKEN/MONGO_URI/OWNER_ID);
-#   Session string & Inbox group are configured **inside Telegram** and stored in MongoDB
-# - MongoDB as the exclusive bridge + job queue + configuration store
-# - DM inbox → group topics; owner replies harvested; final protected send ONLY by the user client
-# - Manual protected send: /send_protected <TARGET_CHAT_ID> (reply to content)
-# - Media + buttons supported via stored file_ids & inline keyboard markup
-
 import os
 import sys
 import asyncio
