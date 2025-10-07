@@ -1,0 +1,5 @@
+pyrogram==2.0.106
+TgCrypto==1.2.5
+pymongo==4.6.3
+dnspython==2.6.1
+pyromod==1.5
