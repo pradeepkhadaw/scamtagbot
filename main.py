@@ -487,9 +487,8 @@ async def run_user_client_loop():
         bg.cancel()
 
 
-# -----------------------------
 # Entrypoints
-# -----------------------------
+
 
 async def run_std():
     async with std_app:
