@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 
 from pymongo import MongoClient
+from pymongo.collection import Collection
 from pymongo.errors import PyMongoError
 from pyrogram import Client, filters
 from pyrogram.enums import ChatType
@@ -40,8 +41,8 @@ try:
     client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
     client.server_info()  # Test connection
     db = client["ultimate_hybrid_shieldbot"]
-    JOBS = db["jobs"]
-    CONFIG = db["config"]
+    JOBS: Collection = db["jobs"]
+    CONFIG: Collection = db["config"]
 except PyMongoError as e:
     log.error("Failed to connect to MongoDB: %s", e)
     sys.exit(1)
@@ -371,10 +372,15 @@ async def std_background():
             log.exception("STD loop error: %s", loop_err)
             await asyncio.sleep(2)
 
+async def main():
+    async with std_app:
+        log.info("STD bot started")
+        await std_background()
+
 if __name__ == "__main__":
     log.info("Starting STD bot...")
     try:
-        std_app.run(std_background())
+        asyncio.run(main())
     except Exception as e:
         log.error("Failed to start STD bot: %s", e)
         sys.exit(1)
