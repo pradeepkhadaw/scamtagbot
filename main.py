@@ -8,7 +8,7 @@ from typing import Optional, Dict, Any
 # --- Libraries ---
 from pymongo import MongoClient
 from pymongo.collection import Collection
-from pyrogram import Client, filters
+from pyrogram import Client, filters, idle
 from pyrogram.enums import ChatType
 from pyrogram.handlers import MessageHandler
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
@@ -77,14 +77,11 @@ def build_reply_markup(button_rows) -> Optional[InlineKeyboardMarkup]:
 # =================================================================
 # === CLIENTS DEFINITION (BOT + USER) ===
 # =================================================================
-# Bot Client (Commands aur Group mein replies ke liye)
 bot_app = Client(
     "bot_session",
     api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN
 )
 
-# User Client (DMs receive karne aur protected message bhejne ke liye)
-# Yeh None se start hoga aur session milne par start hoga
 user_app: Optional[Client] = None
 session_string = get_config("SESSION_STRING")
 if session_string:
@@ -100,7 +97,6 @@ async def send_protected_message(job_id, job_data):
     if not user_app or not user_app.is_connected:
         log.error(f"User client connected nahi hai. Job {job_id} fail hua.")
         return
-    # (Full logic for sending message as before)
     target_id = job_data.get("sender_id")
     content = job_data.get("content_out", {})
     kind, text, file_id, markup = content.get("kind"), content.get("text"), content.get("file_id"), build_reply_markup(content.get("buttons"))
@@ -132,7 +128,6 @@ async def set_group_cmd(client: Client, message: Message):
 
 @bot_app.on_message(filters.private & filters.command("generate_session") & filters.user(OWNER_ID))
 async def generate_session_cmd(client: Client, message: Message):
-    # (Full logic for generating session as before)
     try:
         ask_phone = await client.ask(message.chat.id, "📲 Apna phone number country code ke saath bhejein.", timeout=300)
         phone = ask_phone.text.strip()
@@ -188,24 +183,34 @@ async def on_incoming_dm(client: Client, message: Message):
     await bot_app.send_message(group_id, header, reply_to_message_id=fwd_msg.id)
     JOBS.update_one({"_id": job_res.inserted_id}, {"$set": {"group_message_id": fwd_msg.id}})
 
-# Handler ko user_app se jodna (agar user_app hai toh)
 if user_app:
     user_app.add_handler(MessageHandler(on_incoming_dm, filters.private & ~filters.me))
 
 
-# --- Sabse Simple Start Karne ka Tarika ---
+# --- FINAL STARTUP LOGIC ---
 async def main():
-    """Dono clients ko ek saath start aur run karta hai"""
+    """Dono clients ko start karta hai aur hamesha chalu rakhta hai."""
     log.info("Starting clients...")
-    clients_to_run = [bot_app]
-    if user_app:
-        clients_to_run.append(user_app)
     
-    # Yeh Pyrogram ka official tarika hai multiple clients chalane ka
-    await Client.compose(clients_to_run)
+    # Dono clients ko ek ke baad ek start karna
+    await bot_app.start()
+    log.info("Bot client started.")
+    
+    if user_app:
+        await user_app.start()
+        log.info("User client started.")
+    
+    log.info("All clients are running. Waiting for termination signal...")
+    await idle() # Yeh Pyrogram ka function hai jo bot ko chalu rakhta hai
+    
+    # Bot band hone par clients ko stop karna
+    await bot_app.stop()
+    if user_app:
+        await user_app.stop()
+    log.info("All clients stopped.")
 
 
 if __name__ == "__main__":
-    # Yeh line `main` function ko run karti hai jo sab kuch chalu rakhega
+    # Yeh line `main` function ko run karti hai
     asyncio.run(main())
-
+    
