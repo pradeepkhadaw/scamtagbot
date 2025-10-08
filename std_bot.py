@@ -48,27 +48,9 @@ except PyMongoError as e:
     sys.exit(1)
 
 # Constants
-STATUS_NEW_DM = "NEW_DM"
 STATUS_PENDING_REPLY = "PENDING_REPLY"
 STATUS_READY_TO_SEND = "READY_TO_SEND"
-STATUS_COMPLETED = "COMPLETED"
-STATUS_ERROR = "ERROR"
-STATUS_SENDING = "SENDING"
-
-TYPE_DM_FLOW = "DM_FLOW"
 TYPE_MANUAL_SEND = "MANUAL_SEND"
-
-# Create MongoDB indexes
-try:
-    JOBS.create_index("status")
-    JOBS.create_index("created_at")
-    JOBS.create_index("updated_at")
-    JOBS.create_index([("sender_id", 1), ("group_topic_id", 1)])
-    JOBS.create_index("group_message_id")
-    JOBS.create_index("dm_message_id")
-    CONFIG.create_index("key", unique=True)
-except PyMongoError as e:
-    log.error("Failed to create MongoDB indexes: %s", e)
 
 def now():
     return datetime.now(timezone.utc)
@@ -104,8 +86,6 @@ def extract_content(msg: Message) -> Dict[str, Any]:
                     "text": b.text,
                     "url": getattr(b, "url", None),
                     "callback_data": getattr(b, "callback_data", None),
-                    "switch_inline_query": getattr(b, "switch_inline_query", None),
-                    "switch_inline_query_current_chat": getattr(b, "switch_inline_query_current_chat", None),
                 }
                 for b in row
             ])
@@ -113,20 +93,6 @@ def extract_content(msg: Message) -> Dict[str, Any]:
     kind = "text"
     if msg.photo:
         kind = "photo"; payload["file_id"] = msg.photo.file_id
-    elif msg.video:
-        kind = "video"; payload["file_id"] = msg.video.file_id
-    elif msg.document:
-        kind = "document"; payload["file_id"] = msg.document.file_id
-    elif msg.sticker:
-        kind = "sticker"; payload["file_id"] = msg.sticker.file_id
-    elif msg.animation:
-        kind = "animation"; payload["file_id"] = msg.animation.file_id
-    elif msg.audio:
-        kind = "audio"; payload["file_id"] = msg.audio.file_id
-    elif msg.voice:
-        kind = "voice"; payload["file_id"] = msg.voice.file_id
-    elif msg.video_note:
-        kind = "video_note"; payload["file_id"] = msg.video_note.file_id
     payload["kind"] = kind
     return payload
 
@@ -141,10 +107,6 @@ def build_reply_markup(button_rows: Optional[List[List[Dict[str, Any]]]]) -> Opt
                 btns.append(InlineKeyboardButton(text=b["text"], url=b["url"]))
             elif b.get("callback_data"):
                 btns.append(InlineKeyboardButton(text=b["text"], callback_data=b["callback_data"]))
-            elif b.get("switch_inline_query"):
-                btns.append(InlineKeyboardButton(text=b["text"], switch_inline_query=b["switch_inline_query"]))
-            elif b.get("switch_inline_query_current_chat"):
-                btns.append(InlineKeyboardButton(text=b["text"], switch_inline_query_current_chat=b["switch_inline_query_current_chat"]))
             else:
                 btns.append(InlineKeyboardButton(text=b.get("text", "Button"), callback_data="noop"))
         rows.append(btns)
@@ -231,7 +193,7 @@ async def generate_session(client: Client, message: Message):
 
             session_string = await temp.export_session_string()
             set_config("SESSION_STRING", session_string)
-            await client.send_message(chat_id, "✅ Session saved to DB. User bot will process DMs.")
+            await client.send_message(chat_id, "✅ Session saved to DB. Start user bot to process DMs.")
             log.info("Session generated and saved for phone %s", phone)
     except FloodWait as e:
         log.warning("FloodWait in session gen: %s seconds", e.value)
