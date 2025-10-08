@@ -1,7 +1,9 @@
 import os
 import sys
 import logging
+import asyncio
 from pyrogram import Client, filters, idle
+from pyrogram.types import Message  # <-- YEH LINE MISSING THI, AB ADD KAR DI HAI
 
 # --- Basic Logging ---
 logging.basicConfig(
@@ -47,9 +49,7 @@ async def auth_ping_handler(client: Client, message: Message):
 # --- HANDLER 3: Koi bhi private message pakadne ke liye ---
 @app.on_message(filters.private & ~filters.command(["ping", "authping"]))
 async def catch_all_private_handler(client: Client, message: Message):
-    # Yeh handler tab chalega jab upar ke dono command nahi honge
     log.info(f"☑️☑️☑️ CATCH-ALL HANDLER TRIGGER HUA! Text: '{message.text}' ☑️☑️☑️")
-    # Yahan se reply bhejenge taaki pata chale OWNER_ID galat hai ya nahi
     await message.reply_text(f"Received your message, but it was not a valid command or your OWNER_ID did not match for '/authping'.\n\nYour User ID is: `{message.from_user.id}`\nConfigured OWNER_ID is: `{OWNER_ID}`")
 
 async def main():
@@ -57,7 +57,7 @@ async def main():
     await app.start()
     me = await app.get_me()
     log.info(f"Bot '{me.username}' start ho gaya hai. Ab commands ka intezar hai.")
-    await idle() # Bot ko chalu rakhega
+    await idle()
     log.info("Bot band ho raha hai.")
     await app.stop()
 
@@ -66,4 +66,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         log.info("Bot band kar diya gaya.")
-
+        
