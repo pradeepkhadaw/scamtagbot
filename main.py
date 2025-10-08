@@ -7,6 +7,7 @@ from typing import Optional, Dict, Any, List
 
 from pymongo import MongoClient, ReturnDocument
 from pymongo.collection import Collection
+from pymongo.errors import PyMongoError
 
 from pyrogram import Client, filters
 from pyrogram.enums import ChatType
@@ -15,12 +16,14 @@ from pyrogram.errors import FloodWait
 
 from pyromod import listen
 
+# Configuration
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 MONGO_URI = os.environ["MONGO_URI"]
 OWNER_ID = int(os.environ["OWNER_ID"])
 
+# Logging setup
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -28,11 +31,18 @@ logging.basicConfig(
 )
 log = logging.getLogger("shieldbot")
 
-client = MongoClient(MONGO_URI)
-db = client["ultimate_hybrid_shieldbot"]
-JOBS: Collection = db["jobs"]
-CONFIG: Collection = db["config"]
+# MongoDB setup
+try:
+    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+    client.server_info()  # Test connection
+    db = client["ultimate_hybrid_shieldbot"]
+    JOBS: Collection = db["jobs"]
+    CONFIG: Collection = db["config"]
+except PyMongoError as e:
+    log.error("Failed to connect to MongoDB: %s", e)
+    sys.exit(1)
 
+# Constants
 STATUS_NEW_DM = "NEW_DM"
 STATUS_PENDING_REPLY = "PENDING_REPLY"
 STATUS_READY_TO_SEND = "READY_TO_SEND"
@@ -43,28 +53,39 @@ STATUS_SENDING = "SENDING"
 TYPE_DM_FLOW = "DM_FLOW"
 TYPE_MANUAL_SEND = "MANUAL_SEND"
 
-JOBS.create_index("status")
-JOBS.create_index("created_at")
-JOBS.create_index("updated_at")
-JOBS.create_index([("sender_id", 1), ("group_topic_id", 1)])
-JOBS.create_index("group_message_id")
-JOBS.create_index("dm_message_id")
-CONFIG.create_index("key", unique=True)
+# Create MongoDB indexes
+try:
+    JOBS.create_index("status")
+    JOBS.create_index("created_at")
+    JOBS.create_index("updated_at")
+    JOBS.create_index([("sender_id", 1), ("group_topic_id", 1)])
+    JOBS.create_index("group_message_id")
+    JOBS.create_index("dm_message_id")
+    CONFIG.create_index("key", unique=True)
+except PyMongoError as e:
+    log.error("Failed to create MongoDB indexes: %s", e)
 
 def now():
     return datetime.now(timezone.utc)
 
 def set_config(key: str, value: Any):
-    CONFIG.find_one_and_update(
-        {"key": key},
-        {"$set": {"key": key, "value": value, "updated_at": now()}},
-        upsert=True,
-        return_document=ReturnDocument.AFTER,
-    )
+    try:
+        CONFIG.find_one_and_update(
+            {"key": key},
+            {"$set": {"key": key, "value": value, "updated_at": now()}},
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+    except PyMongoError as e:
+        log.error("Failed to set config %s: %s", key, e)
 
 def get_config(key: str, default=None):
-    doc = CONFIG.find_one({"key": key})
-    return doc["value"] if doc and "value" in doc else default
+    try:
+        doc = CONFIG.find_one({"key": key})
+        return doc["value"] if doc and "value" in doc else default
+    except PyMongoError as e:
+        log.error("Failed to get config %s: %s", key, e)
+        return default
 
 def extract_content(msg: Message) -> Dict[str, Any]:
     payload: Dict[str, Any] = {}
@@ -128,6 +149,7 @@ def build_reply_markup(button_rows: Optional[List[List[Dict[str, Any]]]]) -> Opt
         rows.append(btns)
     return InlineKeyboardMarkup(rows)
 
+# Standard bot client
 std_app = Client(
     name="std-bot",
     api_id=API_ID,
@@ -138,8 +160,12 @@ std_app = Client(
 
 @std_app.on_message(filters.private & filters.user(OWNER_ID) & filters.command("start"))
 async def start_cmd(client: Client, message: Message):
-    await message.reply_text("Bot is running! Available commands:\n/start - This message\n/status - Check setup\n/generate_session - Create user session\n/send_protected - Manual protected send")
-    log.info("Start command triggered by owner")
+    try:
+        await message.reply_text("Bot is running! Available commands:\n/start - This message\n/status - Check setup\n/generate_session - Create user session\n/send_protected - Manual protected send")
+        log.info("Start command triggered by owner")
+    except Exception as e:
+        log.exception("Error in start_cmd: %s", e)
+        await message.reply_text(f"Error: {e}")
 
 @std_app.on_message(filters.command("set_group") & filters.user(OWNER_ID))
 async def cmd_set_group(client: Client, message: Message):
@@ -295,7 +321,7 @@ async def std_background():
                 try:
                     topic = await std_app.create_forum_topic(group_id, topic_title)
                     topic_id = topic.message_thread_id
-                except Exception as e:  # Changed from AttributeError to Exception for broader error handling, including if topics not supported
+                except Exception as e:
                     log.warning("Topic creation failed, falling back to no topic: %s", e)
                     topic_id = None
 
@@ -455,6 +481,7 @@ async def run_user_client_loop():
         finally:
             bg.cancel()
             await bg
+
 
 async def run_std():
     async with std_app:
