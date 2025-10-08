@@ -159,9 +159,12 @@ std_app = Client(
     in_memory=True,
 )
 
-@std_app.on_message(filters.private & filters.user(OWNER_ID) & filters.command("start"))
+@std_app.on_message(filters.private & filters.command("start"))
 async def start_cmd(client: Client, message: Message):
     try:
+        if message.from_user.id != OWNER_ID:
+            log.warning("Command ignored: user ID %s does not match OWNER_ID %s", message.from_user.id, OWNER_ID)
+            return
         await client.send_message(
             chat_id=message.chat.id,
             text="Bot is running! Available commands:\n/start - This message\n/status - Check setup\n/generate_session - Create user session\n/send_protected - Manual protected send"
@@ -303,6 +306,7 @@ async def std_background():
         try:
             group_id = get_config("INBOX_GROUP_ID")
             if not group_id:
+                log.info("No INBOX_GROUP_ID set, waiting...")
                 await asyncio.sleep(2)
                 continue
             job = JOBS.find_one_and_update(
@@ -319,6 +323,7 @@ async def std_background():
                 try:
                     topic = await std_app.create_forum_topic(group_id, topic_title)
                     topic_id = topic.message_thread_id
+                    log.info("Created topic %s for sender %s", topic_id, sender_id)
                 except Exception as e:
                     log.warning("Topic creation failed, falling back to no topic: %s", e)
                     topic_id = None
@@ -363,7 +368,7 @@ async def std_background():
                 )
                 log.info("Mirrored DM to group for job %s", job["_id"])
             except Exception as e:
-                log.exception("Mirror to group failed: %s", e)
+                log.exception("Mirror to group failed for job %s: %s", job["_id"], e)
                 JOBS.find_one_and_update(
                     {"_id": job["_id"]},
                     {"$set": {"status": STATUS_ERROR, "error": str(e), "updated_at": now()}}
@@ -373,9 +378,14 @@ async def std_background():
             await asyncio.sleep(2)
 
 async def main():
-    async with std_app:
-        log.info("STD bot started")
-        await std_background()
+    await std_app.start()
+    log.info("STD bot started")
+    bg = asyncio.create_task(std_background())
+    try:
+        await asyncio.Event().wait()
+    finally:
+        bg.cancel()
+        await std_app.stop()
 
 if __name__ == "__main__":
     log.info("Starting STD bot...")
