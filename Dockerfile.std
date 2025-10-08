@@ -1,0 +1,16 @@
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Copy only necessary files
+COPY std_bot.py requirements.txt /app/
+
+# Install dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Default port (optional, for Heroku compatibility)
+EXPOSE 8080
+
+# Start command
+CMD ["python", "std_bot.py"]
