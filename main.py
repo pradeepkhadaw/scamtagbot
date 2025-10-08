@@ -38,7 +38,7 @@ except KeyError as e:
 try:
     log.info("STEP 2: Configuring Google Gemini AI...")
     genai.configure(api_key=GEMINI_API_KEY)
-    ai_model = genai.GenerativeModel('gemini-1.0-pro')
+    ai_model = genai.GenerativeModel('gemini-2.5-flash')
     log.info("✅ STEP 2: Google Gemini AI model successfully configured.")
 except Exception as e:
     log.error(f"❌ FATAL: AI model configure karte waqt error aaya: {e}")
