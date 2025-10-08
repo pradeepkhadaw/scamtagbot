@@ -177,7 +177,6 @@ async def start_cmd(client: Client, message: Message):
 @std_app.on_message(filters.command("set_group") & filters.user(OWNER_ID))
 async def cmd_set_group(client: Client, message: Message):
     try:
-        log.info("Set_group command triggered")
         if message.chat.type not in (ChatType.SUPERGROUP, ChatType.GROUP):
             return await client.send_message(message.chat.id, "Run /set_group **inside** the Inbox Group (forum-enabled).")
         set_config("INBOX_GROUP_ID", message.chat.id)
@@ -190,7 +189,6 @@ async def cmd_set_group(client: Client, message: Message):
 @std_app.on_message(filters.private & filters.user(OWNER_ID) & filters.command("status"))
 async def cmd_status(client: Client, message: Message):
     try:
-        log.info("Status command triggered")
         gid = get_config("INBOX_GROUP_ID")
         sess = bool(get_config("SESSION_STRING"))
         await client.send_message(
@@ -201,6 +199,7 @@ async def cmd_status(client: Client, message: Message):
                 f"• Inbox Group ID: {gid if gid else '❌ not set'}",
             ])
         )
+        log.info("Status command triggered")
     except Exception as e:
         log.exception("Error in status: %s", e)
         await client.send_message(message.chat.id, f"Error: {e}")
@@ -208,7 +207,6 @@ async def cmd_status(client: Client, message: Message):
 @std_app.on_message(filters.private & filters.user(OWNER_ID) & filters.command("generate_session"))
 async def generate_session(client: Client, message: Message):
     try:
-        log.info("Generate_session command triggered")
         chat_id = message.chat.id
         await client.send_message(chat_id, "📲 Send your phone number with country code (e.g., +91xxxxxxxxxx):")
         phone_msg = await client.listen(chat_id=chat_id, filters=filters.text, timeout=60)
@@ -233,7 +231,7 @@ async def generate_session(client: Client, message: Message):
 
             session_string = await temp.export_session_string()
             set_config("SESSION_STRING", session_string)
-            await client.send_message(chat_id, "✅ Session saved to DB. Start the user bot to process DMs.")
+            await client.send_message(chat_id, "✅ Session saved to DB. User bot will process DMs.")
             log.info("Session generated and saved for phone %s", phone)
     except FloodWait as e:
         log.warning("FloodWait in session gen: %s seconds", e.value)
@@ -248,7 +246,6 @@ async def generate_session(client: Client, message: Message):
 )
 async def owner_group_replies(client: Client, message: Message):
     try:
-        log.info("Owner group reply detected")
         if not message.reply_to_message:
             return
         group_message_id = message.reply_to_message.id
@@ -260,7 +257,7 @@ async def owner_group_replies(client: Client, message: Message):
             {"_id": job["_id"]},
             {"$set": {"content_out": content, "status": STATUS_READY_TO_SEND, "updated_at": now()}},
         )
-        await client.send_message(message.chat.id, "Queued for protected send by user bot ✅")
+        await client.send_message(message.chat.id, "Queued for protected send ✅")
         log.info("Job %s marked ready to send", job["_id"])
     except Exception as e:
         log.exception("Error in owner_group_replies: %s", e)
@@ -269,7 +266,6 @@ async def owner_group_replies(client: Client, message: Message):
 @std_app.on_message(filters.private & filters.user(OWNER_ID) & filters.command("send_protected"))
 async def cmd_send_protected(client: Client, message: Message):
     try:
-        log.info("Send_protected command triggered")
         parts = message.text.split(maxsplit=1)
         if len(parts) < 2:
             return await client.send_message(message.chat.id, "Usage: reply to content with\n/send_protected <TARGET_CHAT_ID>")
@@ -300,91 +296,12 @@ async def cmd_send_protected(client: Client, message: Message):
         log.exception("Error in send_protected: %s", e)
         await client.send_message(message.chat.id, f"Error: {e}")
 
-async def std_background():
-    log.info("STD bot background loop started")
-    while True:
-        try:
-            group_id = get_config("INBOX_GROUP_ID")
-            if not group_id:
-                log.info("No INBOX_GROUP_ID set, waiting...")
-                await asyncio.sleep(2)
-                continue
-            job = JOBS.find_one_and_update(
-                {"status": STATUS_NEW_DM},
-                {"$set": {"status": STATUS_PENDING_REPLY, "updated_at": now()}},
-            )
-            if not job:
-                await asyncio.sleep(1.2)
-                continue
-            sender_id = job["sender_id"]
-            topic_id = job.get("group_topic_id")
-            if not topic_id:
-                topic_title = f"DM {sender_id}"
-                try:
-                    topic = await std_app.create_forum_topic(group_id, topic_title)
-                    topic_id = topic.message_thread_id
-                    log.info("Created topic %s for sender %s", topic_id, sender_id)
-                except Exception as e:
-                    log.warning("Topic creation failed, falling back to no topic: %s", e)
-                    topic_id = None
-            content_in = job.get("content_in") or {}
-            kind = content_in.get("kind", "text")
-            text = content_in.get("text")
-            file_id = content_in.get("file_id")
-            markup = build_reply_markup(content_in.get("buttons"))
-            send_kwargs = {"chat_id": group_id, "reply_markup": markup}
-            if topic_id:
-                send_kwargs["message_thread_id"] = topic_id
-            sent: Optional[Message] = None
-            try:
-                if kind == "text":
-                    sent = await std_app.send_message(**send_kwargs, text=text or "(no text)")
-                elif kind == "photo":
-                    sent = await std_app.send_photo(**send_kwargs, photo=file_id, caption=text)
-                elif kind == "video":
-                    sent = await std_app.send_video(**send_kwargs, video=file_id, caption=text)
-                elif kind == "document":
-                    sent = await std_app.send_document(**send_kwargs, document=file_id, caption=text)
-                elif kind == "sticker":
-                    sent = await std_app.send_sticker(**send_kwargs, sticker=file_id)
-                elif kind == "animation":
-                    sent = await std_app.send_animation(**send_kwargs, animation=file_id, caption=text)
-                elif kind == "audio":
-                    sent = await std_app.send_audio(**send_kwargs, audio=file_id, caption=text)
-                elif kind == "voice":
-                    sent = await std_app.send_voice(**send_kwargs, voice=file_id, caption=text)
-                elif kind == "video_note":
-                    sent = await std_app.send_video_note(**send_kwargs, video_note=file_id)
-                else:
-                    sent = await std_app.send_message(**send_kwargs, text=text or "(unsupported kind treated as text)")
-                JOBS.find_one_and_update(
-                    {"_id": job["_id"]},
-                    {"$set": {
-                        "group_topic_id": topic_id,
-                        "group_message_id": sent.id if sent else None,
-                        "status": STATUS_PENDING_REPLY,
-                        "updated_at": now()
-                    }},
-                )
-                log.info("Mirrored DM to group for job %s", job["_id"])
-            except Exception as e:
-                log.exception("Mirror to group failed for job %s: %s", job["_id"], e)
-                JOBS.find_one_and_update(
-                    {"_id": job["_id"]},
-                    {"$set": {"status": STATUS_ERROR, "error": str(e), "updated_at": now()}}
-                )
-        except Exception as loop_err:
-            log.exception("STD loop error: %s", loop_err)
-            await asyncio.sleep(2)
-
 async def main():
     await std_app.start()
-    log.info("STD bot started")
-    bg = asyncio.create_task(std_background())
+    log.info("STD bot started and idling")
     try:
         await asyncio.Event().wait()
     finally:
-        bg.cancel()
         await std_app.stop()
 
 if __name__ == "__main__":
