@@ -2,86 +2,109 @@ import os
 import sys
 import logging
 import asyncio
+
+# Zaroori libraries
 from pyrogram import Client, filters
 from pyrogram.types import Message
+from pyrogram.enums import ChatAction
+
+# Google Gemini AI library
+import google.generativeai as genai
 
 # --- Logging Setup ---
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(name)s | %(message)s",
-    stream=sys.stdout
-)
-log = logging.getLogger("ProtectorUserBot")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(name)s | %(message)s")
+log = logging.getLogger("AIUserBot")
 
 # --- Configuration ---
-# Is bot ke liye sirf yeh 3 variables chahiye
 try:
     API_ID = int(os.environ["API_ID"])
     API_HASH = os.environ["API_HASH"]
     SESSION_STRING = os.environ["SESSION_STRING"]
-except (KeyError, ValueError) as e:
-    log.error(f"FATAL: Environment Variables (API_ID, API_HASH, SESSION_STRING) sahi se set nahi hain: {e}")
+    GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+except KeyError as e:
+    log.error(f"FATAL: Environment Variable set nahi hai: {e}")
+    sys.exit(1)
+
+# --- AI Setup ---
+try:
+    genai.configure(api_key=GEMINI_API_KEY)
+    ai_model = genai.GenerativeModel('gemini-pro')
+    log.info("Google Gemini AI model successfully load ho gaya hai.")
+except Exception as e:
+    log.error(f"AI model load karte waqt error aaya: {e}")
     sys.exit(1)
 
 # --- Userbot Client ---
 app = Client(
-    "my_user_bot",
+    "ai_user_bot_session",
     api_id=API_ID,
     api_hash=API_HASH,
     session_string=SESSION_STRING
 )
 
+# =================================================================
+# === NEW HELPER FUNCTION FOR LONG MESSAGES ===
+# =================================================================
+async def send_long_message(message: Message, text: str):
+    """
+    Agar message lamba hai to use 4096 characters ke chunks mein tod kar bhejta hai.
+    """
+    if len(text) <= 4096:
+        await message.reply_text(text)
+        return
 
-async def resend_protected(client: Client, message: Message):
-    """
-    Message ka type check karke use protect karke waapis bhejta hai.
-    """
-    chat_id = message.chat.id
-    reply_id = message.reply_to_message_id or None
+    log.info("Jawab lamba hai, isliye isse tukdon mein toda ja raha hai...")
+    chunks = []
+    current_chunk = ""
+    # Hum text ko lines ke hisaab se todenge taaki formatting kharaab na ho
+    for line in text.splitlines(keepends=True):
+        if len(current_chunk) + len(line) > 4096:
+            chunks.append(current_chunk)
+            current_chunk = ""
+        current_chunk += line
+    
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    for i, chunk in enumerate(chunks):
+        await message.reply_text(chunk)
+        log.info(f"Chunk {i+1}/{len(chunks)} bheja gaya.")
+        # Har message ke beech 1 second ka pause, taaki Telegram spam na samjhe
+        if i < len(chunks) - 1:
+            await asyncio.sleep(1)
+# =================================================================
+
+
+# --- Message Handler ---
+@app.on_message(filters.private & ~filters.me)
+async def handle_ai_dm(client: Client, message: Message):
+    sender_id = message.from_user.id
+    if not message.text: # Agar message mein text nahi hai (jaise photo), to ignore karein
+        return
+        
+    log.info(f"Naya DM aaya from User ID {sender_id}: '{message.text}'")
 
     try:
-        if message.text:
-            await client.send_message(chat_id, message.text, protect_content=True, reply_to_message_id=reply_id)
-        elif message.photo:
-            await client.send_photo(chat_id, message.photo.file_id, caption=message.caption, protect_content=True, reply_to_message_id=reply_id)
-        elif message.video:
-            await client.send_video(chat_id, message.video.file_id, caption=message.caption, protect_content=True, reply_to_message_id=reply_id)
-        elif message.animation:  # GIFs
-            await client.send_animation(chat_id, message.animation.file_id, caption=message.caption, protect_content=True, reply_to_message_id=reply_id)
-        elif message.document:
-            await client.send_document(chat_id, message.document.file_id, caption=message.caption, protect_content=True, reply_to_message_id=reply_id)
-        elif message.audio:
-            await client.send_audio(chat_id, message.audio.file_id, caption=message.caption, protect_content=True, reply_to_message_id=reply_id)
-        elif message.voice:
-            await client.send_voice(chat_id, message.voice.file_id, caption=message.caption, protect_content=True, reply_to_message_id=reply_id)
-        elif message.sticker:
-            await client.send_sticker(chat_id, message.sticker.file_id, reply_to_message_id=reply_id)
-        else:
-            log.warning(f"Unsupported message type in chat {chat_id}, cannot protect.")
+        await client.send_chat_action(chat_id=sender_id, action=ChatAction.TYPING)
+
+        response = ai_model.generate_content(message.text)
+        
+        # Jawab bhejte waqt ab naya function use hoga
+        await send_long_message(message, response.text)
+        
+        log.info("AI ne poora jawab bhej diya hai.")
 
     except Exception as e:
-        log.error(f"Message ko resend nahi kar paya (Chat ID: {chat_id}): {e}")
+        log.error(f"User {sender_id} ke message ko process karte waqt error: {e}")
+        await message.reply_text("Maaf kijiye, abhi main aapke message ko process nahi kar pa raha hoon.")
 
 
-@app.on_message(filters.me & ~filters.service)
-async def protect_my_message(client: Client, message: Message):
-    """
-    Aapke message ko delete karke, use protected content ke roop mein waapis bhejta hai.
-    """
-    # "Light-fast speed" ke liye, delete aur resend ek saath run honge
-    try:
-        await asyncio.gather(
-            message.delete(),
-            resend_protected(client, message)
-        )
-        log.info(f"Message protected in chat {message.chat.id}")
-    except Exception as e:
-        log.error(f"Message ko protect karte waqt error: {e}")
+@app.on_message(filters.command("alive") & filters.me)
+async def alive_command(client: Client, message: Message):
+    await message.edit_text("✅ **AI Userbot is running.** (with message splitter)")
 
 
-# --- Userbot ko chalane ka simple tarika ---
+# --- Userbot ko chalana ---
 if __name__ == "__main__":
-    log.info("Protector Userbot start ho raha hai...")
+    log.info("AI Userbot start ho raha hai...")
     app.run()
-    log.info("Userbot band ho gaya.")
-  
