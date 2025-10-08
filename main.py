@@ -1,218 +1,110 @@
 import os
 import sys
-import asyncio
 import logging
-from datetime import datetime, timezone
-from typing import Optional, Dict, Any
-
-# --- Libraries ---
-from pymongo import MongoClient
-from pymongo.collection import Collection
-from pyrogram import Client, filters, idle
-from pyrogram.enums import ChatType
-from pyrogram.handlers import MessageHandler
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import FloodWait
+from pyrogram import Client, filters
+from pyrogram.errors import SessionPasswordNeeded
 
 # --- Logging Setup ---
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s", stream=sys.stdout)
-log = logging.getLogger("HybridShieldBot")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(message)s")
+log = logging.getLogger("SessionGeneratorBot")
 
-# --- Configuration (Full) ---
+# --- Configuration ---
+# Is bot ke liye sirf yeh 4 variables chahiye
 try:
     API_ID = int(os.environ["API_ID"])
     API_HASH = os.environ["API_HASH"]
     BOT_TOKEN = os.environ["BOT_TOKEN"]
-    MONGO_URI = os.environ["MONGO_URI"]
     OWNER_ID = int(os.environ["OWNER_ID"])
 except (KeyError, ValueError) as e:
-    log.error(f"FATAL: Environment Variable galat hai ya set nahi hai: {e}")
+    log.error(f"FATAL: Zaroori Environment Variables set nahi hain (API_ID, API_HASH, BOT_TOKEN, OWNER_ID): {e}")
     sys.exit(1)
 
-# --- Lazy MongoDB Setup ---
-mongo_client: Optional[MongoClient] = None
-db = None
+# --- Bot Client ---
+app = Client(
+    "session_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN,
+    in_memory=True # Is bot ke liye session file ki zaroorat nahi
+)
 
-def get_db_collection(collection_name: str) -> Optional[Collection]:
-    """Connects to DB on first call and returns the collection."""
-    global mongo_client, db
-    if mongo_client is None:
-        try:
-            log.info("Connecting to MongoDB for the first time...")
-            mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-            mongo_client.server_info() # Test connection
-            db = mongo_client["ultimate_hybrid_shieldbot"]
-            log.info("MongoDB connected successfully.")
-        except Exception as e:
-            log.error(f"Failed to connect to MongoDB: {e}")
-            return None
-    return db[collection_name]
+# --- Handlers ---
+@app.on_message(filters.command("start") & filters.user(OWNER_ID))
+async def start_command(client, message):
+    """Start command ka simple reply deta hai"""
+    await message.reply_text(
+        "Hello! Main aapki User Account Session String generate karne mein madad karunga.\n\n"
+        "Shuru karne ke liye /generate command bhejein."
+    )
 
-# --- Helper Functions ---
-def now() -> datetime: return datetime.now(timezone.utc)
-
-def set_config(key: str, value: Any):
-    CONFIG = get_db_collection("config")
-    if CONFIG is not None:
-        CONFIG.update_one({"key": key}, {"$set": {"value": value, "updated_at": now()}}, upsert=True)
-
-def get_config(key: str, default=None) -> Any:
-    CONFIG = get_db_collection("config")
-    if CONFIG is not None:
-        doc = CONFIG.find_one({"key": key})
-        return doc.get("value", default) if doc else default
-    return default
-
-# (Baaki helper functions pehle jaise hi)
-def extract_content(msg: Message) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {"kind": "text"}
-    if msg.text: payload["text"] = msg.text
-    elif msg.caption: payload["text"] = msg.caption
-    if msg.photo:
-        payload["kind"] = "photo"; payload["file_id"] = msg.photo.file_id
-    elif msg.video:
-        payload["kind"] = "video"; payload["file_id"] = msg.video.file_id
-    elif msg.document:
-        payload["kind"] = "document"; payload["file_id"] = msg.document.file_id
-    if msg.reply_markup and isinstance(msg.reply_markup, InlineKeyboardMarkup):
-        payload["buttons"] = [[{"text": b.text, "url": b.url} for b in row] for row in msg.reply_markup.inline_keyboard]
-    return payload
-
-def build_reply_markup(button_rows) -> Optional[InlineKeyboardMarkup]:
-    if not button_rows: return None
-    return InlineKeyboardMarkup([[InlineKeyboardButton(text=b["text"], url=b.get("url")) for b in row] for row in button_rows])
-
-
-# --- CLIENTS DEFINITION ---
-bot_app = Client("bot_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-user_app: Optional[Client] = None # Initialize as None
-
-# --- Core Sending Function ---
-async def send_protected_message(job_id, job_data):
-    if not user_app or not user_app.is_connected:
-        log.error(f"User client connected nahi hai. Job {job_id} fail hua.")
-        return
-    
-    target_id, content = job_data.get("sender_id"), job_data.get("content_out", {})
-    kind, text, file_id, markup = content.get("kind"), content.get("text"), content.get("file_id"), build_reply_markup(content.get("buttons"))
-    
+@app.on_message(filters.command("generate") & filters.user(OWNER_ID))
+async def generate_session(client, message):
+    """Session generate karne ka process shuru karta hai"""
     try:
-        if kind == "text": await user_app.send_message(target_id, text, protect_content=True, reply_markup=markup)
-        elif kind == "photo": await user_app.send_photo(target_id, file_id, caption=text, protect_content=True, reply_markup=markup)
-        elif kind == "video": await user_app.send_video(target_id, file_id, caption=text, protect_content=True, reply_markup=markup)
-        elif kind == "document": await user_app.send_document(target_id, file_id, caption=text, protect_content=True, reply_markup=markup)
+        await message.reply_text("Theek hai, shuru karte hain...")
         
-        JOBS = get_db_collection("jobs")
-        if JOBS is not None: JOBS.update_one({"_id": job_id}, {"$set": {"status": "COMPLETED"}})
-        log.info(f"✅ Job {job_id} safaltapoorvak poora hua.")
+        # Ek temporary user client banate hain
+        # Yeh aapke account se login karega
+        user_client = Client(
+            name="user_session_generator",
+            api_id=API_ID,
+            api_hash=API_HASH,
+            in_memory=True
+        )
+
+        await user_client.connect()
+        
+        # User se phone number maangna
+        phone_msg = await client.ask(
+            chat_id=message.chat.id,
+            text="Apna Telegram phone number country code ke saath bhejein (e.g., +919876543210):",
+            timeout=300
+        )
+        phone_number = phone_msg.text
+
+        # Telegram ko code bhejne ke liye kehna
+        sent_code = await user_client.send_code(phone_number)
+        
+        # User se OTP maangna
+        otp_msg = await client.ask(
+            chat_id=message.chat.id,
+            text="Aapke number ya Telegram app par bheja gaya OTP code yahan daalein:",
+            timeout=300
+        )
+        otp = otp_msg.text
+
+        # Sign in karna
+        await user_client.sign_in(phone_number, sent_code.phone_code_hash, otp)
+
+    except SessionPasswordNeeded:
+        # Agar 2FA enabled hai
+        password_msg = await client.ask(
+            chat_id=message.chat.id,
+            text="Aapka account 2FA (Two-Step Verification) se protected hai.\n\nApna password daalein:",
+            timeout=300
+        )
+        password = password_msg.text
+        await user_client.check_password(password)
+    
     except Exception as e:
-        log.error(f"Message bhejte waqt Job ID '{job_id}' fail ho gaya: {e}")
-        JOBS = get_db_collection("jobs")
-        if JOBS is not None: JOBS.update_one({"_id": job_id}, {"$set": {"status": "ERROR", "error": str(e)}})
+        await message.reply_text(f"❌ Ek error aa gaya:\n\n`{e}`")
+        if 'user_client' in locals() and user_client.is_connected:
+            await user_client.disconnect()
+        return
 
-
-# --- BOT HANDLERS (`bot_app`) ---
-@bot_app.on_message(filters.private & filters.command("start") & filters.user(OWNER_ID))
-async def start_cmd(client: Client, message: Message):
-    await message.reply_text("Bot chal raha hai! Commands:\n/set_group\n/generate_session")
-
-@bot_app.on_message(filters.command("set_group") & filters.user(OWNER_ID))
-async def set_group_cmd(client: Client, message: Message):
-    if message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
-        set_config("INBOX_GROUP_ID", message.chat.id)
-        await message.reply_text(f"✅ Inbox Group save ho gaya: `{message.chat.id}`")
-    else:
-        await message.reply_text("Yeh command group ke andar use karein.")
-
-@bot_app.on_message(filters.private & filters.command("generate_session") & filters.user(OWNER_ID))
-async def generate_session_cmd(client: Client, message: Message):
-    try:
-        ask_phone = await client.ask(message.chat.id, "📲 Apna phone number country code ke saath bhejein.", timeout=300)
-        # (baaki logic pehle jaisa hi)
-        phone = ask_phone.text.strip()
-        temp_client = Client("temp_session", api_id=API_ID, api_hash=API_HASH, in_memory=True)
-        await temp_client.connect()
-        code_info = await temp_client.send_code(phone)
-        ask_code = await client.ask(message.chat.id, "🔐 OTP dalein.", timeout=300)
-        code = ask_code.text.strip()
-        try:
-            await temp_client.sign_in(phone, code_info.phone_code_hash, code)
-        except Exception as e:
-            if "SESSION_PASSWORD_NEEDED" in str(e):
-                ask_pwd = await client.ask(message.chat.id, "🔑 2FA password dalein.", timeout=300)
-                await temp_client.check_password(ask_pwd.text.strip())
-            else: raise e
-        session_string = await temp_client.export_session_string()
-        set_config("SESSION_STRING", session_string)
-        await temp_client.disconnect()
-        await message.reply_text("✅ Session save ho gaya hai. Bot restart karein.")
-    except Exception as e: await message.reply_text(f"❌ Error: {e}")
-
-@bot_app.on_message(filters.group & filters.user(OWNER_ID) & filters.reply)
-async def on_owner_reply(client: Client, message: Message):
-    inbox_group_id = get_config("INBOX_GROUP_ID")
-    if not inbox_group_id or message.chat.id != inbox_group_id: return
+    # Session String nikalna
+    session_string = await user_client.export_session_string()
+    await user_client.disconnect()
     
-    JOBS = get_db_collection("jobs")
-    if JOBS is None: return
-    
-    job = JOBS.find_one({"group_message_id": message.reply_to_message_id, "status": "PENDING_REPLY"})
-    if not job: return
-    
-    content, updated_job_data = extract_content(message), {"content_out": content, "updated_at": now()}
-    JOBS.update_one({"_id": job["_id"]}, {"$set": updated_job_data})
-    
-    full_job_data = {**job, **updated_job_data}
-    asyncio.create_task(send_protected_message(job["_id"], full_job_data))
-    await message.reply_text(f"✅ User `{job.get('sender_id')}` ko reply bheja ja raha hai.", quote=True)
+    await message.reply_text(
+        "✅ Session String safaltapoorvak generate ho gayi hai.\n\n"
+        "Neeche diye gaye message se use copy karke safe jagah rakh lein. **Yeh aapke password jaisa hai, kisi se share na karein.**"
+    )
+    # Session string ko alag message mein bhejna taaki copy karna aasan ho
+    await client.send_message(message.chat.id, f"`{session_string}`")
 
-# --- USER HANDLER (`user_app`) ---
-async def on_incoming_dm(client: Client, message: Message):
-    if not message.from_user or message.from_user.is_self: return
-    
-    group_id = get_config("INBOX_GROUP_ID")
-    if not group_id: return log.warning("INBOX_GROUP_ID set nahi hai.")
-    
-    JOBS = get_db_collection("jobs")
-    if JOBS is None: return
-
-    job_doc = {"status": "PENDING_REPLY", "sender_id": message.from_user.id, "content_in": extract_content(message), "created_at": now()}
-    job_res = JOBS.insert_one(job_doc)
-    
-    sender_name = f"{message.from_user.first_name} {message.from_user.last_name or ''}".strip()
-    header = f"📩 Naya message: `{sender_name}`\n👤 User ID: `{message.from_user.id}`"
-    fwd_msg = await message.forward(group_id)
-    await bot_app.send_message(group_id, header, reply_to_message_id=fwd_msg.id)
-    JOBS.update_one({"_id": job_res.inserted_id}, {"$set": {"group_message_id": fwd_msg.id}})
-
-
-# --- FINAL STARTUP LOGIC ---
-async def main():
-    global user_app
-    log.info("Starting bot client...")
-    await bot_app.start()
-    log.info("Bot client started.")
-
-    # User client ko ab start karne se pehle define karenge
-    session_string = get_config("SESSION_STRING")
-    if session_string:
-        log.info("Session string found, starting user client...")
-        user_app = Client("user_session", api_id=API_ID, api_hash=API_HASH, session_string=session_string)
-        user_app.add_handler(MessageHandler(on_incoming_dm, filters.private & ~filters.me))
-        await user_app.start()
-        log.info("User client started.")
-    else:
-        log.info("No session string found. Run /generate_session to create one.")
-
-    log.info("All clients are running. Waiting for termination signal...")
-    await idle()
-    
-    await bot_app.stop()
-    if user_app and user_app.is_connected:
-        await user_app.stop()
-    log.info("All clients stopped.")
-
-
+# --- Bot ko chalana ---
 if __name__ == "__main__":
-    asyncio.run(main())
+    log.info("Session Generator Bot start ho raha hai...")
+    app.run()
     
