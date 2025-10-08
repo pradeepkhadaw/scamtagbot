@@ -295,19 +295,9 @@ async def std_background():
                 try:
                     topic = await std_app.create_forum_topic(group_id, topic_title)
                     topic_id = topic.message_thread_id
-                except AttributeError:
+                except Exception as e:  # Changed from AttributeError to Exception for broader error handling, including if topics not supported
+                    log.warning("Topic creation failed, falling back to no topic: %s", e)
                     topic_id = None
-                except Exception as e:
-                    log.exception("Create topic failed: %s", e)
-                    JOBS.find_one_and_update(
-                        {"_id": job["_id"]},
-                        {"$set": {
-                            "status": STATUS_ERROR,
-                            "error": str(e),
-                            "updated_at": now()
-                        }},
-                    )
-                    continue
 
             content_in = job.get("content_in") or {}
             kind = content_in.get("kind", "text")
@@ -484,11 +474,10 @@ if __name__ == "__main__":
         sys.exit(1)
 
     role = sys.argv[1].strip().lower()
-    print(f"Role detected: {role}")
-
     if role == "std":
-        print("Launching STD Bot...")
         asyncio.run(run_std())
     elif role == "user":
-        print("Launching USER Client...")
         asyncio.run(run_user())
+    else:
+        print("Invalid role: must be 'std' or 'user'")
+        sys.exit(1)
