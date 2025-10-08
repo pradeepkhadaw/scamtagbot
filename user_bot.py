@@ -211,14 +211,14 @@ async def run_user_client_loop():
                     except Exception as loop_err:
                         log.exception("USER loop error: %s", loop_err)
                         await asyncio.sleep(2)
-            async with user_app:
-                log.info("USER client started and idling")
-                bg = asyncio.create_task(user_background())
-                try:
-                    await asyncio.Event().wait()
-                finally:
-                    bg.cancel()
-                    await bg
+            await user_app.start()
+            log.info("USER client started and idling")
+            bg = asyncio.create_task(user_background())
+            try:
+                await asyncio.Event().wait()
+            finally:
+                bg.cancel()
+                await user_app.stop()
         except Exception as e:
             log.exception("USER client failed: %s", e)
             await asyncio.sleep(5)
