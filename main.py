@@ -2,14 +2,14 @@ import os
 import sys
 import logging
 from pyrogram import Client, filters
-from pyrogram.errors import SessionPasswordNeeded
+from pyrogram.types import Message
+from pyrogram.errors import SessionPasswordNeeded, PhoneCodeInvalid, PasswordHashInvalid
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(message)s")
 log = logging.getLogger("SessionGeneratorBot")
 
 # --- Configuration ---
-# Is bot ke liye sirf yeh 4 variables chahiye
 try:
     API_ID = int(os.environ["API_ID"])
     API_HASH = os.environ["API_HASH"]
@@ -25,86 +25,121 @@ app = Client(
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    in_memory=True # Is bot ke liye session file ki zaroorat nahi
+    in_memory=True
 )
+
+# --- Data Store (Conversation state ke liye) ---
+# Yeh store karega ki hum user se kya expect kar rahe hain (phone, otp, ya password)
+user_data = {}
+
 
 # --- Handlers ---
 @app.on_message(filters.command("start") & filters.user(OWNER_ID))
-async def start_command(client, message):
+async def start_command(client: Client, message: Message):
     """Start command ka simple reply deta hai"""
+    user_id = message.from_user.id
+    if user_id in user_data:
+        del user_data[user_id] # Puraana process cancel karein
+        
     await message.reply_text(
         "Hello! Main aapki User Account Session String generate karne mein madad karunga.\n\n"
         "Shuru karne ke liye /generate command bhejein."
     )
 
 @app.on_message(filters.command("generate") & filters.user(OWNER_ID))
-async def generate_session(client, message):
+async def generate_command(client: Client, message: Message):
     """Session generate karne ka process shuru karta hai"""
-    try:
-        await message.reply_text("Theek hai, shuru karte hain...")
+    user_id = message.from_user.id
+    if user_id in user_data:
+        del user_data[user_id]
         
-        # Ek temporary user client banate hain
-        # Yeh aapke account se login karega
-        user_client = Client(
-            name="user_session_generator",
-            api_id=API_ID,
-            api_hash=API_HASH,
-            in_memory=True
-        )
+    await message.reply_text("Theek hai, shuru karte hain...\n\nApna Telegram phone number country code ke saath bhejein (e.g., +919876543210):")
+    # User ka state set karna
+    user_data[user_id] = {"step": "phone"}
 
-        await user_client.connect()
-        
-        # User se phone number maangna
-        phone_msg = await client.ask(
-            chat_id=message.chat.id,
-            text="Apna Telegram phone number country code ke saath bhejein (e.g., +919876543210):",
-            timeout=300
-        )
-        phone_number = phone_msg.text
 
-        # Telegram ko code bhejne ke liye kehna
-        sent_code = await user_client.send_code(phone_number)
-        
-        # User se OTP maangna
-        otp_msg = await client.ask(
-            chat_id=message.chat.id,
-            text="Aapke number ya Telegram app par bheja gaya OTP code yahan daalein:",
-            timeout=300
-        )
-        otp = otp_msg.text
+@app.on_message(filters.private & filters.user(OWNER_ID) & ~filters.command(["start", "generate"]))
+async def message_handler(client: Client, message: Message):
+    """Commands ke alawa baaki sabhi messages ko handle karta hai"""
+    user_id = message.from_user.id
+    state = user_data.get(user_id)
 
-        # Sign in karna
-        await user_client.sign_in(phone_number, sent_code.phone_code_hash, otp)
-
-    except SessionPasswordNeeded:
-        # Agar 2FA enabled hai
-        password_msg = await client.ask(
-            chat_id=message.chat.id,
-            text="Aapka account 2FA (Two-Step Verification) se protected hai.\n\nApna password daalein:",
-            timeout=300
-        )
-        password = password_msg.text
-        await user_client.check_password(password)
-    
-    except Exception as e:
-        await message.reply_text(f"❌ Ek error aa gaya:\n\n`{e}`")
-        if 'user_client' in locals() and user_client.is_connected:
-            await user_client.disconnect()
+    if not state:
         return
 
-    # Session String nikalna
-    session_string = await user_client.export_session_string()
-    await user_client.disconnect()
+    # --- Step 1: Phone Number Handle Karna ---
+    if state["step"] == "phone":
+        phone_number = message.text
+        try:
+            temp_client = Client(name="user_gen", api_id=API_ID, api_hash=API_HASH, in_memory=True)
+            await temp_client.connect()
+            
+            sent_code = await temp_client.send_code(phone_number)
+            
+            # State update karna
+            user_data[user_id]["step"] = "otp"
+            user_data[user_id]["phone"] = phone_number
+            user_data[user_id]["hash"] = sent_code.phone_code_hash
+            user_data[user_id]["client"] = temp_client
+            
+            await message.reply_text("Aapke number ya Telegram app par bheja gaya OTP code yahan daalein:")
+        except Exception as e:
+            await message.reply_text(f"❌ Phone number ke saath error aaya:\n`{e}`")
+            del user_data[user_id]
     
-    await message.reply_text(
-        "✅ Session String safaltapoorvak generate ho gayi hai.\n\n"
-        "Neeche diye gaye message se use copy karke safe jagah rakh lein. **Yeh aapke password jaisa hai, kisi se share na karein.**"
-    )
-    # Session string ko alag message mein bhejna taaki copy karna aasan ho
-    await client.send_message(message.chat.id, f"`{session_string}`")
+    # --- Step 2: OTP Handle Karna ---
+    elif state["step"] == "otp":
+        otp = message.text
+        temp_client = state["client"]
+        try:
+            await temp_client.sign_in(state["phone"], state["hash"], otp)
+            # Agar sign in safal raha (2FA nahi hai)
+            session_string = await temp_client.export_session_string()
+            await temp_client.disconnect()
+
+            await message.reply_text(f"✅ Session String generate ho gayi hai:\n\n`{session_string}`")
+            del user_data[user_id]
+
+        except SessionPasswordNeeded:
+            # Agar 2FA hai
+            user_data[user_id]["step"] = "password"
+            await message.reply_text("Aapka account 2FA (Two-Step Verification) se protected hai.\n\nApna password daalein:")
+        
+        except PhoneCodeInvalid:
+            await message.reply_text("❌ OTP galat hai. Kripya /generate command se dobara shuru karein.")
+            del user_data[user_id]
+            await temp_client.disconnect()
+
+        except Exception as e:
+            await message.reply_text(f"❌ OTP ke saath error aaya:\n`{e}`")
+            del user_data[user_id]
+            await temp_client.disconnect()
+
+    # --- Step 3: Password Handle Karna ---
+    elif state["step"] == "password":
+        password = message.text
+        temp_client = state["client"]
+        try:
+            await temp_client.check_password(password)
+            session_string = await temp_client.export_session_string()
+            await temp_client.disconnect()
+            
+            await message.reply_text(f"✅ Session String generate ho gayi hai:\n\n`{session_string}`")
+            del user_data[user_id]
+
+        except PasswordHashInvalid:
+            await message.reply_text("❌ Password galat hai. Kripya /generate command se dobara shuru karein.")
+            del user_data[user_id]
+            await temp_client.disconnect()
+            
+        except Exception as e:
+            await message.reply_text(f"❌ Password ke saath error aaya:\n`{e}`")
+            del user_data[user_id]
+            await temp_client.disconnect()
+
 
 # --- Bot ko chalana ---
 if __name__ == "__main__":
     log.info("Session Generator Bot start ho raha hai...")
     app.run()
-    
+        
