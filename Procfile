@@ -1,3 +1,2 @@
-# Two dynos using the same single-file codebase
-std: python main.py std
-user: python main.py user
+std: python std_bot.py
+user: python user_bot.py
