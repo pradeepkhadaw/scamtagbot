@@ -10,9 +10,9 @@ from pymongo.collection import Collection
 from pymongo.errors import PyMongoError
 from pyrogram import Client, filters
 from pyrogram.enums import ChatType
+from pyrogram.handlers import MessageHandler
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait
-from pyromod import listen  # You still need pyromod for the .listen() method
 
 # --- Configuration ---
 # Load environment variables. The script will exit if any are missing.
@@ -91,6 +91,8 @@ def extract_content(msg: Message) -> Dict[str, Any]:
     
     # Extract text/caption and determine the message kind
     kind = "text"
+    text_content = msg.text or msg.caption or ""
+    
     if msg.text:
         payload["text"] = msg.text
     elif msg.caption:
@@ -99,10 +101,12 @@ def extract_content(msg: Message) -> Dict[str, Any]:
     if msg.photo:
         kind = "photo"
         payload["file_id"] = msg.photo.file_id
-    # Add other media types here if needed (e.g., video, document)
-    # elif msg.video:
-    #     kind = "video"
-    #     payload["file_id"] = msg.video.file_id
+    elif msg.video:
+        kind = "video"
+        payload["file_id"] = msg.video.file_id
+    elif msg.document:
+        kind = "document"
+        payload["file_id"] = msg.document.file_id
     
     payload["kind"] = kind
 
@@ -186,7 +190,7 @@ async def status_cmd(client: Client, message: Message):
 async def generate_session_cmd(client: Client, message: Message):
     try:
         chat_id = message.chat.id
-        ask_phone = await client.ask(chat_id, "📲 Please send your phone number with the country code (e.g., +12223334444).")
+        ask_phone = await client.ask(chat_id, "📲 Please send your phone number with the country code (e.g., +12223334444).", timeout=300)
         phone = ask_phone.text.strip()
 
         temp_client = Client(name="temp-session", api_id=API_ID, api_hash=API_HASH, in_memory=True)
@@ -194,18 +198,19 @@ async def generate_session_cmd(client: Client, message: Message):
 
         try:
             code_info = await temp_client.send_code(phone)
-            ask_code = await client.ask(chat_id, "🔐 An OTP has been sent to you. Please enter it.")
+            ask_code = await client.ask(chat_id, "🔐 An OTP has been sent to you. Please enter it.", timeout=300)
             code = ask_code.text.strip()
             await temp_client.sign_in(phone, code_info.phone_code_hash, code)
 
         except FloodWait as e:
             log.warning("FloodWait during session generation: sleeping for %s seconds.", e.value)
             await client.send_message(chat_id, f"⏳ Flood wait: please wait for {e.value} seconds before trying again.")
+            await temp_client.disconnect()
             return
         
         except Exception as e:
             if "SESSION_PASSWORD_NEEDED" in str(e):
-                ask_pwd = await client.ask(chat_id, "🔑 Your account has 2FA enabled. Please enter your password.")
+                ask_pwd = await client.ask(chat_id, "🔑 Your account has 2FA enabled. Please enter your password.", timeout=300)
                 await temp_client.check_password(ask_pwd.text.strip())
             else:
                 raise e
@@ -222,13 +227,16 @@ async def generate_session_cmd(client: Client, message: Message):
         await message.reply_text(f"❌ An error occurred: {e}")
 
 @bot_app.on_message(
-    # Listen for replies from the owner in the configured inbox group
     filters.group & 
     filters.user(OWNER_ID) & 
-    filters.reply &
-    filters.chat(get_config("INBOX_GROUP_ID", 0))
+    filters.reply
 )
 async def on_owner_reply(client: Client, message: Message):
+    # DYNAMICALLY check if the message is from the configured group
+    inbox_group_id = get_config("INBOX_GROUP_ID")
+    if not inbox_group_id or message.chat.id != inbox_group_id:
+        return
+        
     try:
         # Find the job associated with the message the owner replied to
         job = JOBS.find_one({
@@ -249,7 +257,7 @@ async def on_owner_reply(client: Client, message: Message):
         log.info("Job %s marked as READY_TO_SEND for user %s.", job["_id"], sender_info)
 
     except Exception as e:
-        log.exception("Error in owner_group_replies: %s", e)
+        log.exception("Error in on_owner_reply: %s", e)
         await message.reply_text(f"Error queuing reply: {e}")
 
 @bot_app.on_message(filters.private & filters.command("send_protected") & filters.user(OWNER_ID))
@@ -287,7 +295,6 @@ async def send_protected_cmd(client: Client, message: Message):
 # --- USER HANDLERS (`user_app`) ---
 
 async def on_incoming_dm(client: Client, message: Message):
-    # This function will be added as a handler to user_app when it starts
     try:
         # Ignore messages from bots or from self
         if not message.from_user or message.from_user.is_self or message.from_user.is_bot:
@@ -311,15 +318,15 @@ async def on_incoming_dm(client: Client, message: Message):
         job_res = JOBS.insert_one(job_doc)
         log.info("New DM job %s created for user %s.", job_res.inserted_id, message.from_user.id)
 
-        # 2. Forward the message to the inbox group
+        # 2. Forward the message to the inbox group and send a header
         sender_name = f"{message.from_user.first_name} {message.from_user.last_name or ''}".strip()
-        header = f"📩 **New message from:** `{sender_name}`\n👤 **User ID:** `{message.from_user.id}`\n\n---\n"
+        header = f"📩 **New message from:** `{sender_name}`\n👤 **User ID:** `{message.from_user.id}`\n\n---\n*Reply to the message below to send a protected reply.*"
         
         # We use the user_app to forward the original message for perfect quality
         fwd_msg = await message.forward(group_id)
         
         # Send a header message and reply to the forwarded content
-        await client.send_message(
+        await bot_app.send_message(
             chat_id=group_id,
             text=header,
             reply_to_message_id=fwd_msg.id
@@ -338,7 +345,6 @@ async def on_incoming_dm(client: Client, message: Message):
 
     except Exception as e:
         log.exception("Error in on_incoming_dm: %s", e)
-
 
 # --- BACKGROUND JOB PROCESSOR ---
 
@@ -371,8 +377,11 @@ async def job_processor():
                         await user_app.send_message(target_id, text, protect_content=True, reply_markup=markup)
                     elif kind == "photo":
                         await user_app.send_photo(target_id, file_id, caption=text, protect_content=True, reply_markup=markup)
-                    # Add other media types here if needed
-
+                    elif kind == "video":
+                        await user_app.send_video(target_id, file_id, caption=text, protect_content=True, reply_markup=markup)
+                    elif kind == "document":
+                         await user_app.send_document(target_id, file_id, caption=text, protect_content=True, reply_markup=markup)
+                    
                     JOBS.update_one({"_id": job["_id"]}, {"$set": {"status": STATUS_COMPLETED, "updated_at": now()}})
                     log.info("✅ Successfully completed job %s.", job["_id"])
 
@@ -412,8 +421,6 @@ async def main():
         )
         # Add the DM handler to the user client
         user_app.add_handler(
-            # filters.private & filters.incoming & ~filters.me in Pyrogram is complex
-            # This simplified version works well.
             MessageHandler(on_incoming_dm, filters.private & ~filters.me)
         )
         try:
@@ -447,4 +454,4 @@ if __name__ == "__main__":
         log.info("Bot stopped by user.")
     except Exception as e:
         log.exception("Critical error in main execution: %s", e)
-    
+
