@@ -1,15 +1,16 @@
-FROM python:3.11-slim
+# Step 1: Base Image - Ek halka Python environment chunein
+FROM python:3.10-slim
 
-# Set workdir
+# Step 2: Working Directory - Container ke andar ek folder banayein
 WORKDIR /app
 
-# Copy files
-COPY std_bot.py user_bot.py requirements.txt /app/
-
-# Install dependencies
+# Step 3: Copy requirements file aur dependencies install karein
+# Isse pehle copy karne se build speed fast hoti hai
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Default port for Heroku
-EXPOSE 8080
+# Step 4: Apne project ka code copy karein
+COPY main.py .
 
-# Heroku uses Procfile, so no CMD needed
+# Step 5: Default Command - Batayein ki container start hone par kya run karna hai
+CMD ["python", "main.py"]
