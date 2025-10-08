@@ -50,7 +50,6 @@ STATUS_READY_TO_SEND = "READY_TO_SEND"
 STATUS_COMPLETED = "COMPLETED"
 STATUS_ERROR = "ERROR"
 STATUS_SENDING = "SENDING"
-
 TYPE_DM_FLOW = "DM_FLOW"
 
 def now():
@@ -76,8 +75,6 @@ def extract_content(msg: Message) -> Dict[str, Any]:
                     "text": b.text,
                     "url": getattr(b, "url", None),
                     "callback_data": getattr(b, "callback_data", None),
-                    "switch_inline_query": getattr(b, "switch_inline_query", None),
-                    "switch_inline_query_current_chat": getattr(b, "switch_inline_query_current_chat", None),
                 }
                 for b in row
             ])
@@ -85,20 +82,6 @@ def extract_content(msg: Message) -> Dict[str, Any]:
     kind = "text"
     if msg.photo:
         kind = "photo"; payload["file_id"] = msg.photo.file_id
-    elif msg.video:
-        kind = "video"; payload["file_id"] = msg.video.file_id
-    elif msg.document:
-        kind = "document"; payload["file_id"] = msg.document.file_id
-    elif msg.sticker:
-        kind = "sticker"; payload["file_id"] = msg.sticker.file_id
-    elif msg.animation:
-        kind = "animation"; payload["file_id"] = msg.animation.file_id
-    elif msg.audio:
-        kind = "audio"; payload["file_id"] = msg.audio.file_id
-    elif msg.voice:
-        kind = "voice"; payload["file_id"] = msg.voice.file_id
-    elif msg.video_note:
-        kind = "video_note"; payload["file_id"] = msg.video_note.file_id
     payload["kind"] = kind
     return payload
 
@@ -113,10 +96,6 @@ def build_reply_markup(button_rows: Optional[List[List[Dict[str, Any]]]]) -> Opt
                 btns.append(InlineKeyboardButton(text=b["text"], url=b["url"]))
             elif b.get("callback_data"):
                 btns.append(InlineKeyboardButton(text=b["text"], callback_data=b["callback_data"]))
-            elif b.get("switch_inline_query"):
-                btns.append(InlineKeyboardButton(text=b["text"], switch_inline_query=b["switch_inline_query"]))
-            elif b.get("switch_inline_query_current_chat"):
-                btns.append(InlineKeyboardButton(text=b["text"], switch_inline_query_current_chat=b["switch_inline_query_current_chat"]))
             else:
                 btns.append(InlineKeyboardButton(text=b.get("text", "Button"), callback_data="noop"))
         rows.append(btns)
@@ -166,49 +145,20 @@ async def start_user_client():
 
                 # Forward to group
                 sender_id = message.from_user.id
-                topic_id = None
-                try:
-                    topic = await client.send_message(group_id, f"Creating topic for DM {sender_id}")
-                    topic_id = topic.message_thread_id
-                    log.info("Created topic %s for sender %s", topic_id, sender_id)
-                except Exception as e:
-                    log.warning("Topic creation failed, falling back to no topic: %s", e)
-
                 content_in = doc["content_in"]
                 kind = content_in.get("kind", "text")
                 text = content_in.get("text")
                 file_id = content_in.get("file_id")
                 markup = build_reply_markup(content_in.get("buttons"))
-                send_kwargs = {"chat_id": group_id, "reply_markup": markup}
-                if topic_id:
-                    send_kwargs["message_thread_id"] = topic_id
-
                 sent: Optional[Message] = None
                 try:
                     if kind == "text":
-                        sent = await client.send_message(**send_kwargs, text=text or "(no text)")
+                        sent = await client.send_message(group_id, text=text or "(no text)", reply_markup=markup)
                     elif kind == "photo":
-                        sent = await client.send_photo(**send_kwargs, photo=file_id, caption=text)
-                    elif kind == "video":
-                        sent = await client.send_video(**send_kwargs, video=file_id, caption=text)
-                    elif kind == "document":
-                        sent = await client.send_document(**send_kwargs, document=file_id, caption=text)
-                    elif kind == "sticker":
-                        sent = await client.send_sticker(**send_kwargs, sticker=file_id)
-                    elif kind == "animation":
-                        sent = await client.send_animation(**send_kwargs, animation=file_id, caption=text)
-                    elif kind == "audio":
-                        sent = await client.send_audio(**send_kwargs, audio=file_id, caption=text)
-                    elif kind == "voice":
-                        sent = await client.send_voice(**send_kwargs, voice=file_id, caption=text)
-                    elif kind == "video_note":
-                        sent = await client.send_video_note(**send_kwargs, video_note=file_id)
-                    else:
-                        sent = await client.send_message(**send_kwargs, text=text or "(unsupported kind treated as text)")
+                        sent = await client.send_photo(group_id, photo=file_id, caption=text, reply_markup=markup)
                     JOBS.find_one_and_update(
                         {"_id": res.inserted_id},
                         {"$set": {
-                            "group_topic_id": topic_id,
                             "group_message_id": sent.id if sent else None,
                             "status": STATUS_PENDING_REPLY,
                             "updated_at": now()
@@ -245,22 +195,6 @@ async def start_user_client():
                         await client.send_message(target_id, text=text or "(no text)", protect_content=True, reply_markup=markup)
                     elif kind == "photo":
                         await client.send_photo(target_id, photo=file_id, caption=text, protect_content=True, reply_markup=markup)
-                    elif kind == "video":
-                        await client.send_video(target_id, video=file_id, caption=text, protect_content=True, reply_markup=markup)
-                    elif kind == "document":
-                        await client.send_document(target_id, document=file_id, caption=text, protect_content=True, reply_markup=markup)
-                    elif kind == "sticker":
-                        await client.send_sticker(target_id, sticker=file_id, protect_content=True)
-                    elif kind == "animation":
-                        await client.send_animation(target_id, animation=file_id, caption=text, protect_content=True, reply_markup=markup)
-                    elif kind == "audio":
-                        await client.send_audio(target_id, audio=file_id, caption=text, protect_content=True, reply_markup=markup)
-                    elif kind == "voice":
-                        await client.send_voice(target_id, voice=file_id, caption=text, protect_content=True, reply_markup=markup)
-                    elif kind == "video_note":
-                        await client.send_video_note(target_id, video_note=file_id, protect_content=True)
-                    else:
-                        await client.send_message(target_id, text=text or "(unsupported kind treated as text)", protect_content=True, reply_markup=markup)
                     JOBS.find_one_and_update(
                         {"_id": job["_id"]},
                         {"$set": {"status": STATUS_COMPLETED, "updated_at": now()}}
