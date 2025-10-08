@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 
 from pymongo import MongoClient
+from pymongo.collection import Collection
 from pymongo.errors import PyMongoError
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
@@ -36,8 +37,8 @@ try:
     client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
     client.server_info()  # Test connection
     db = client["ultimate_hybrid_shieldbot"]
-    JOBS = db["jobs"]
-    CONFIG = db["config"]
+    JOBS: Collection = db["jobs"]
+    CONFIG: Collection = db["config"]
 except PyMongoError as e:
     log.error("Failed to connect to MongoDB: %s", e)
     sys.exit(1)
@@ -62,6 +63,44 @@ def get_config(key: str, default=None):
     except PyMongoError as e:
         log.error("Failed to get config %s: %s", key, e)
         return default
+
+def extract_content(msg: Message) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {}
+    if msg.text or msg.caption:
+        payload["text"] = msg.text or msg.caption
+    if msg.reply_markup and isinstance(msg.reply_markup, InlineKeyboardMarkup):
+        rows = []
+        for row in msg.reply_markup.inline_keyboard:
+            rows.append([
+                {
+                    "text": b.text,
+                    "url": getattr(b, "url", None),
+                    "callback_data": getattr(b, "callback_data", None),
+                    "switch_inline_query": getattr(b, "switch_inline_query", None),
+                    "switch_inline_query_current_chat": getattr(b, "switch_inline_query_current_chat", None),
+                }
+                for b in row
+            ])
+        payload["buttons"] = rows
+    kind = "text"
+    if msg.photo:
+        kind = "photo"; payload["file_id"] = msg.photo.file_id
+    elif msg.video:
+        kind = "video"; payload["file_id"] = msg.video.file_id
+    elif msg.document:
+        kind = "document"; payload["file_id"] = msg.document.file_id
+    elif msg.sticker:
+        kind = "sticker"; payload["file_id"] = msg.sticker.file_id
+    elif msg.animation:
+        kind = "animation"; payload["file_id"] = msg.animation.file_id
+    elif msg.audio:
+        kind = "audio"; payload["file_id"] = msg.audio.file_id
+    elif msg.voice:
+        kind = "voice"; payload["file_id"] = msg.voice.file_id
+    elif msg.video_note:
+        kind = "video_note"; payload["file_id"] = msg.video_note.file_id
+    payload["kind"] = kind
+    return payload
 
 def build_reply_markup(button_rows: Optional[List[List[Dict[str, Any]]]]) -> Optional[InlineKeyboardMarkup]:
     if not button_rows:
@@ -111,12 +150,7 @@ async def run_user_client_loop():
                         "dm_message_id": message.id,
                         "group_topic_id": None,
                         "group_message_id": None,
-                        "content_in": {
-                            "kind": "text",
-                            "text": message.text or "(no text)",
-                            "file_id": None,
-                            "buttons": None,
-                        },
+                        "content_in": extract_content(message),
                         "content_out": None,
                         "created_at": now(),
                         "updated_at": now(),
