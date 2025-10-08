@@ -15,11 +15,7 @@ from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait
 
 # --- Logging Setup ---
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    stream=sys.stdout,
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s", stream=sys.stdout)
 log = logging.getLogger("HybridShieldBot")
 
 # --- Configuration (Full) ---
@@ -33,28 +29,41 @@ except (KeyError, ValueError) as e:
     log.error(f"FATAL: Environment Variable galat hai ya set nahi hai: {e}")
     sys.exit(1)
 
-# --- MongoDB Setup ---
-try:
-    mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-    db = mongo_client["ultimate_hybrid_shieldbot"]
-    JOBS: Collection = db["jobs"]
-    CONFIG: Collection = db["config"]
-    log.info("Successfully connected to MongoDB.")
-except Exception as e:
-    log.error(f"Failed to connect to MongoDB: {e}")
-    sys.exit(1)
+# --- Lazy MongoDB Setup ---
+mongo_client: Optional[MongoClient] = None
+db = None
 
+def get_db_collection(collection_name: str) -> Optional[Collection]:
+    """Connects to DB on first call and returns the collection."""
+    global mongo_client, db
+    if mongo_client is None:
+        try:
+            log.info("Connecting to MongoDB for the first time...")
+            mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+            mongo_client.server_info() # Test connection
+            db = mongo_client["ultimate_hybrid_shieldbot"]
+            log.info("MongoDB connected successfully.")
+        except Exception as e:
+            log.error(f"Failed to connect to MongoDB: {e}")
+            return None
+    return db[collection_name]
 
 # --- Helper Functions ---
 def now() -> datetime: return datetime.now(timezone.utc)
 
 def set_config(key: str, value: Any):
-    CONFIG.update_one({"key": key}, {"$set": {"value": value, "updated_at": now()}}, upsert=True)
+    CONFIG = get_db_collection("config")
+    if CONFIG is not None:
+        CONFIG.update_one({"key": key}, {"$set": {"value": value, "updated_at": now()}}, upsert=True)
 
 def get_config(key: str, default=None) -> Any:
-    doc = CONFIG.find_one({"key": key})
-    return doc.get("value", default) if doc else default
+    CONFIG = get_db_collection("config")
+    if CONFIG is not None:
+        doc = CONFIG.find_one({"key": key})
+        return doc.get("value", default) if doc else default
+    return default
 
+# (Baaki helper functions pehle jaise hi)
 def extract_content(msg: Message) -> Dict[str, Any]:
     payload: Dict[str, Any] = {"kind": "text"}
     if msg.text: payload["text"] = msg.text
@@ -74,31 +83,17 @@ def build_reply_markup(button_rows) -> Optional[InlineKeyboardMarkup]:
     return InlineKeyboardMarkup([[InlineKeyboardButton(text=b["text"], url=b.get("url")) for b in row] for row in button_rows])
 
 
-# =================================================================
-# === CLIENTS DEFINITION (BOT + USER) ===
-# =================================================================
-bot_app = Client(
-    "bot_session",
-    api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN
-)
-
-user_app: Optional[Client] = None
-session_string = get_config("SESSION_STRING")
-if session_string:
-    user_app = Client(
-        "user_session",
-        api_id=API_ID, api_hash=API_HASH, session_string=session_string
-    )
-# =================================================================
-
+# --- CLIENTS DEFINITION ---
+bot_app = Client("bot_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+user_app: Optional[Client] = None # Initialize as None
 
 # --- Core Sending Function ---
 async def send_protected_message(job_id, job_data):
     if not user_app or not user_app.is_connected:
         log.error(f"User client connected nahi hai. Job {job_id} fail hua.")
         return
-    target_id = job_data.get("sender_id")
-    content = job_data.get("content_out", {})
+    
+    target_id, content = job_data.get("sender_id"), job_data.get("content_out", {})
     kind, text, file_id, markup = content.get("kind"), content.get("text"), content.get("file_id"), build_reply_markup(content.get("buttons"))
     
     try:
@@ -106,11 +101,14 @@ async def send_protected_message(job_id, job_data):
         elif kind == "photo": await user_app.send_photo(target_id, file_id, caption=text, protect_content=True, reply_markup=markup)
         elif kind == "video": await user_app.send_video(target_id, file_id, caption=text, protect_content=True, reply_markup=markup)
         elif kind == "document": await user_app.send_document(target_id, file_id, caption=text, protect_content=True, reply_markup=markup)
-        JOBS.update_one({"_id": job_id}, {"$set": {"status": "COMPLETED"}})
+        
+        JOBS = get_db_collection("jobs")
+        if JOBS is not None: JOBS.update_one({"_id": job_id}, {"$set": {"status": "COMPLETED"}})
         log.info(f"✅ Job {job_id} safaltapoorvak poora hua.")
     except Exception as e:
         log.error(f"Message bhejte waqt Job ID '{job_id}' fail ho gaya: {e}")
-        JOBS.update_one({"_id": job_id}, {"$set": {"status": "ERROR", "error": str(e)}})
+        JOBS = get_db_collection("jobs")
+        if JOBS is not None: JOBS.update_one({"_id": job_id}, {"$set": {"status": "ERROR", "error": str(e)}})
 
 
 # --- BOT HANDLERS (`bot_app`) ---
@@ -130,13 +128,14 @@ async def set_group_cmd(client: Client, message: Message):
 async def generate_session_cmd(client: Client, message: Message):
     try:
         ask_phone = await client.ask(message.chat.id, "📲 Apna phone number country code ke saath bhejein.", timeout=300)
+        # (baaki logic pehle jaisa hi)
         phone = ask_phone.text.strip()
         temp_client = Client("temp_session", api_id=API_ID, api_hash=API_HASH, in_memory=True)
         await temp_client.connect()
+        code_info = await temp_client.send_code(phone)
+        ask_code = await client.ask(message.chat.id, "🔐 OTP dalein.", timeout=300)
+        code = ask_code.text.strip()
         try:
-            code_info = await temp_client.send_code(phone)
-            ask_code = await client.ask(message.chat.id, "🔐 OTP dalein.", timeout=300)
-            code = ask_code.text.strip()
             await temp_client.sign_in(phone, code_info.phone_code_hash, code)
         except Exception as e:
             if "SESSION_PASSWORD_NEEDED" in str(e):
@@ -147,32 +146,35 @@ async def generate_session_cmd(client: Client, message: Message):
         set_config("SESSION_STRING", session_string)
         await temp_client.disconnect()
         await message.reply_text("✅ Session save ho gaya hai. Bot restart karein.")
-    except Exception as e:
-        await message.reply_text(f"❌ Error: {e}")
+    except Exception as e: await message.reply_text(f"❌ Error: {e}")
 
 @bot_app.on_message(filters.group & filters.user(OWNER_ID) & filters.reply)
 async def on_owner_reply(client: Client, message: Message):
     inbox_group_id = get_config("INBOX_GROUP_ID")
     if not inbox_group_id or message.chat.id != inbox_group_id: return
     
+    JOBS = get_db_collection("jobs")
+    if JOBS is None: return
+    
     job = JOBS.find_one({"group_message_id": message.reply_to_message_id, "status": "PENDING_REPLY"})
     if not job: return
-        
-    content = extract_content(message)
-    updated_job_data = {"content_out": content, "updated_at": now()}
+    
+    content, updated_job_data = extract_content(message), {"content_out": content, "updated_at": now()}
     JOBS.update_one({"_id": job["_id"]}, {"$set": updated_job_data})
     
     full_job_data = {**job, **updated_job_data}
     asyncio.create_task(send_protected_message(job["_id"], full_job_data))
     await message.reply_text(f"✅ User `{job.get('sender_id')}` ko reply bheja ja raha hai.", quote=True)
 
-
 # --- USER HANDLER (`user_app`) ---
 async def on_incoming_dm(client: Client, message: Message):
     if not message.from_user or message.from_user.is_self: return
-
+    
     group_id = get_config("INBOX_GROUP_ID")
     if not group_id: return log.warning("INBOX_GROUP_ID set nahi hai.")
+    
+    JOBS = get_db_collection("jobs")
+    if JOBS is None: return
 
     job_doc = {"status": "PENDING_REPLY", "sender_id": message.from_user.id, "content_in": extract_content(message), "created_at": now()}
     job_res = JOBS.insert_one(job_doc)
@@ -183,34 +185,34 @@ async def on_incoming_dm(client: Client, message: Message):
     await bot_app.send_message(group_id, header, reply_to_message_id=fwd_msg.id)
     JOBS.update_one({"_id": job_res.inserted_id}, {"$set": {"group_message_id": fwd_msg.id}})
 
-if user_app:
-    user_app.add_handler(MessageHandler(on_incoming_dm, filters.private & ~filters.me))
-
 
 # --- FINAL STARTUP LOGIC ---
 async def main():
-    """Dono clients ko start karta hai aur hamesha chalu rakhta hai."""
-    log.info("Starting clients...")
-    
-    # Dono clients ko ek ke baad ek start karna
+    global user_app
+    log.info("Starting bot client...")
     await bot_app.start()
     log.info("Bot client started.")
-    
-    if user_app:
+
+    # User client ko ab start karne se pehle define karenge
+    session_string = get_config("SESSION_STRING")
+    if session_string:
+        log.info("Session string found, starting user client...")
+        user_app = Client("user_session", api_id=API_ID, api_hash=API_HASH, session_string=session_string)
+        user_app.add_handler(MessageHandler(on_incoming_dm, filters.private & ~filters.me))
         await user_app.start()
         log.info("User client started.")
-    
+    else:
+        log.info("No session string found. Run /generate_session to create one.")
+
     log.info("All clients are running. Waiting for termination signal...")
-    await idle() # Yeh Pyrogram ka function hai jo bot ko chalu rakhta hai
+    await idle()
     
-    # Bot band hone par clients ko stop karna
     await bot_app.stop()
-    if user_app:
+    if user_app and user_app.is_connected:
         await user_app.stop()
     log.info("All clients stopped.")
 
 
 if __name__ == "__main__":
-    # Yeh line `main` function ko run karti hai
     asyncio.run(main())
     
