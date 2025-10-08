@@ -5,7 +5,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 
-from pymongo import MongoClient, ReturnDocument
+from pymongo import MongoClient
+from pymongo.collection import Collection
 from pymongo.errors import PyMongoError
 from pyrogram import Client, filters
 from pyrogram.enums import ChatType
@@ -79,7 +80,7 @@ def set_config(key: str, value: Any):
             {"key": key},
             {"$set": {"key": key, "value": value, "updated_at": now()}},
             upsert=True,
-            return_document=ReturnDocument.AFTER,
+            return_document=True,
         )
         log.info("Set config %s", key)
     except PyMongoError as e:
@@ -208,12 +209,14 @@ async def generate_session(client: Client, message: Message):
     try:
         log.info("Generate_session command triggered")
         chat_id = message.chat.id
+        await client.send_message(chat_id, "📲 Send your phone number with country code (e.g., +91xxxxxxxxxx):")
         phone_msg = await client.listen(chat_id=chat_id, filters=filters.text, timeout=60)
         phone = phone_msg.text.strip()
 
         temp = Client(name="temp-session", api_id=API_ID, api_hash=API_HASH, in_memory=True)
         async with temp:
             sent = await temp.send_code(phone)
+            await client.send_message(chat_id, "🔐 Enter the code you received:")
             code_msg = await client.listen(chat_id=chat_id, filters=filters.text, timeout=60)
             code = code_msg.text.strip()
 
@@ -221,6 +224,7 @@ async def generate_session(client: Client, message: Message):
                 await temp.sign_in(phone, sent.phone_code_hash, code)
             except Exception as e:
                 if "SESSION_PASSWORD_NEEDED" in str(e):
+                    await client.send_message(chat_id, "🧩 2FA enabled. Enter your password:")
                     pwd_msg = await client.listen(chat_id=chat_id, filters=filters.text, timeout=60)
                     await temp.check_password(pwd_msg.text.strip())
                 else:
