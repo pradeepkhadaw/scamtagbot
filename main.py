@@ -30,7 +30,7 @@ async def start_handler(client: Client, message: Message):
 # --- Bot ko chalane wala function ---
 async def main():
     print("Bot start ho raha hai...")
-    await app.start()
+    await app.run()
     print("Bot online hai.")
     await asyncio.Event().wait() # Bot ko chalu rakhega
 
